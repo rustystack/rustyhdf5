@@ -1,0 +1,13 @@
+[package]
+name = "purehdf5-format"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+byteorder = { version = "1", default-features = false }
+crc32c = { version = "0.6", optional = true }
+
+[features]
+default = ["std", "checksum"]
+std = []
+checksum = ["crc32c"]

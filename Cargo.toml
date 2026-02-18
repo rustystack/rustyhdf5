@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "crates/purehdf5-format",
+    "crates/purehdf5-types",
+    "crates/purehdf5-io",
+    "crates/purehdf5-filters",
+    "crates/purehdf5-derive",
+    "crates/purehdf5",
+]
+resolver = "2"

@@ -1,0 +1,4 @@
+[package]
+name = "purehdf5-filters"
+version = "0.1.0"
+edition = "2021"
