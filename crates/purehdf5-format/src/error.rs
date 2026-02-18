@@ -20,6 +20,12 @@ pub enum FormatError {
     InvalidOffsetSize(u8),
     /// Invalid length size (must be 2, 4, or 8).
     InvalidLengthSize(u8),
+    /// Invalid object header signature.
+    InvalidObjectHeaderSignature,
+    /// Invalid object header version.
+    InvalidObjectHeaderVersion(u8),
+    /// Unknown message type that is marked as must-understand.
+    UnsupportedMessage(u16),
     /// CRC32C checksum mismatch.
     ChecksumMismatch {
         /// The checksum stored in the file.
@@ -49,6 +55,18 @@ impl fmt::Display for FormatError {
             }
             FormatError::InvalidLengthSize(s) => {
                 write!(f, "invalid length size: {s} (must be 2, 4, or 8)")
+            }
+            FormatError::InvalidObjectHeaderSignature => {
+                write!(f, "invalid object header signature")
+            }
+            FormatError::InvalidObjectHeaderVersion(v) => {
+                write!(f, "invalid object header version: {v}")
+            }
+            FormatError::UnsupportedMessage(id) => {
+                write!(
+                    f,
+                    "unsupported message type {id:#06x} marked as must-understand"
+                )
             }
             FormatError::ChecksumMismatch { expected, computed } => {
                 write!(

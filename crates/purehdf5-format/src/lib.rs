@@ -9,5 +9,7 @@
 extern crate alloc;
 
 pub mod error;
+pub mod message_type;
+pub mod object_header;
 pub mod signature;
 pub mod superblock;
