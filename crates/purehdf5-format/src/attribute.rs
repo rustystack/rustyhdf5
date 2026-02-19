@@ -166,6 +166,15 @@ impl AttributeMessage {
 
     /// Serialize attribute message (v2 format, no padding).
     pub fn serialize(&self, length_size: u8) -> Vec<u8> {
+        self.serialize_version(2, length_size)
+    }
+
+    /// Serialize attribute message as v3 (adds character set encoding byte).
+    pub fn serialize_v3(&self, length_size: u8) -> Vec<u8> {
+        self.serialize_version(3, length_size)
+    }
+
+    fn serialize_version(&self, version: u8, length_size: u8) -> Vec<u8> {
         let name_bytes = {
             let mut n = self.name.as_bytes().to_vec();
             n.push(0); // null terminator
@@ -175,11 +184,14 @@ impl AttributeMessage {
         let ds_bytes = self.dataspace.serialize(length_size);
 
         let mut buf = Vec::new();
-        buf.push(2); // version 2
+        buf.push(version);
         buf.push(0); // flags
         buf.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
         buf.extend_from_slice(&(dt_bytes.len() as u16).to_le_bytes());
         buf.extend_from_slice(&(ds_bytes.len() as u16).to_le_bytes());
+        if version >= 3 {
+            buf.push(0x00); // character set encoding: ASCII
+        }
         buf.extend_from_slice(&name_bytes);
         buf.extend_from_slice(&dt_bytes);
         buf.extend_from_slice(&ds_bytes);

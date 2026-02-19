@@ -114,6 +114,12 @@ pub enum FormatError {
     InvalidAttributeInfoVersion(u8),
     /// Invalid shared message version.
     InvalidSharedMessageVersion(u8),
+    /// Invalid SOHM table version.
+    InvalidSohmTableVersion(u8),
+    /// Invalid SOHM table signature (expected "SMTB").
+    InvalidSohmTableSignature,
+    /// Invalid SOHM list signature (expected "SMLI").
+    InvalidSohmListSignature,
     /// Invalid global heap collection signature.
     InvalidGlobalHeapSignature,
     /// Invalid global heap version.
@@ -297,6 +303,15 @@ impl fmt::Display for FormatError {
             }
             FormatError::InvalidSharedMessageVersion(v) => {
                 write!(f, "invalid shared message version: {v}")
+            }
+            FormatError::InvalidSohmTableVersion(v) => {
+                write!(f, "invalid SOHM table version: {v}")
+            }
+            FormatError::InvalidSohmTableSignature => {
+                write!(f, "invalid SOHM table signature (expected SMTB)")
+            }
+            FormatError::InvalidSohmListSignature => {
+                write!(f, "invalid SOHM list signature (expected SMLI)")
             }
             FormatError::InvalidGlobalHeapSignature => {
                 write!(f, "invalid global heap collection signature")
