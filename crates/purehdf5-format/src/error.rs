@@ -43,6 +43,30 @@ pub enum FormatError {
     InvalidByteOrder(u8),
     /// Invalid reference type.
     InvalidReferenceType(u8),
+    /// Invalid dataspace version.
+    InvalidDataspaceVersion(u8),
+    /// Invalid dataspace type.
+    InvalidDataspaceType(u8),
+    /// Invalid data layout version.
+    InvalidLayoutVersion(u8),
+    /// Invalid data layout class.
+    InvalidLayoutClass(u8),
+    /// No data allocated for contiguous layout.
+    NoDataAllocated,
+    /// Type mismatch when reading data.
+    TypeMismatch {
+        /// Expected type description.
+        expected: &'static str,
+        /// Actual type description.
+        actual: &'static str,
+    },
+    /// Data size mismatch.
+    DataSizeMismatch {
+        /// Expected size in bytes.
+        expected: usize,
+        /// Actual size in bytes.
+        actual: usize,
+    },
     /// CRC32C checksum mismatch.
     ChecksumMismatch {
         /// The checksum stored in the file.
@@ -105,6 +129,30 @@ impl fmt::Display for FormatError {
             }
             FormatError::InvalidReferenceType(r) => {
                 write!(f, "invalid reference type: {r}")
+            }
+            FormatError::InvalidDataspaceVersion(v) => {
+                write!(f, "invalid dataspace version: {v}")
+            }
+            FormatError::InvalidDataspaceType(t) => {
+                write!(f, "invalid dataspace type: {t}")
+            }
+            FormatError::InvalidLayoutVersion(v) => {
+                write!(f, "invalid data layout version: {v}")
+            }
+            FormatError::InvalidLayoutClass(c) => {
+                write!(f, "invalid data layout class: {c}")
+            }
+            FormatError::NoDataAllocated => {
+                write!(f, "no data allocated for contiguous layout")
+            }
+            FormatError::TypeMismatch { expected, actual } => {
+                write!(f, "type mismatch: expected {expected}, got {actual}")
+            }
+            FormatError::DataSizeMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "data size mismatch: expected {expected} bytes, got {actual} bytes"
+                )
             }
             FormatError::ChecksumMismatch { expected, computed } => {
                 write!(

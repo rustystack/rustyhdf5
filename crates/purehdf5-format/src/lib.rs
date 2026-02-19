@@ -8,6 +8,9 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
+pub mod data_layout;
+pub mod data_read;
+pub mod dataspace;
 pub mod datatype;
 pub mod error;
 pub mod message_type;
