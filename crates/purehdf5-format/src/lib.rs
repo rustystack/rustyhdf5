@@ -21,6 +21,8 @@ pub mod link_info;
 pub mod link_message;
 pub mod data_layout;
 pub mod data_read;
+pub mod filter_pipeline;
+pub mod filters;
 pub mod dataspace;
 pub mod datatype;
 pub mod error;

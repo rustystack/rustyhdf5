@@ -3,6 +3,7 @@ use purehdf5_format::data_layout::DataLayout;
 use purehdf5_format::data_read::{read_as_f64, read_raw_data};
 use purehdf5_format::dataspace::Dataspace;
 use purehdf5_format::datatype::Datatype;
+use purehdf5_format::filter_pipeline::{FilterPipeline, FILTER_DEFLATE, FILTER_FLETCHER32, FILTER_SHUFFLE};
 use purehdf5_format::group_v2::resolve_path_any;
 use purehdf5_format::message_type::MessageType;
 use purehdf5_format::object_header::ObjectHeader;
@@ -255,4 +256,73 @@ fn vl_strings_h5_root_vl_attr() {
     let strings = vl_attr.read_vl_strings(file_data, sb.offset_size, sb.length_size).unwrap();
     assert_eq!(strings.len(), 1);
     assert_eq!(strings[0], "hello variable length");
+}
+
+// --- Filter Pipeline Integration Tests ---
+
+/// Helper: navigate to dataset and find the FilterPipeline message.
+fn parse_filter_pipeline_from_fixture(file_data: &[u8], dataset_path: &str) -> FilterPipeline {
+    let offset = find_signature(file_data).expect("signature not found");
+    let sb = Superblock::parse(file_data, offset).expect("failed to parse superblock");
+    let addr = resolve_path_any(file_data, &sb, dataset_path).expect("dataset not found");
+    let hdr = ObjectHeader::parse(file_data, addr as usize, sb.offset_size, sb.length_size)
+        .expect("failed to parse object header");
+    let fp_msg = hdr
+        .messages
+        .iter()
+        .find(|m| m.msg_type == MessageType::FilterPipeline)
+        .expect("no FilterPipeline message found");
+    FilterPipeline::parse(&fp_msg.data).expect("failed to parse filter pipeline")
+}
+
+#[test]
+fn fixture_chunked_deflate_filter_pipeline() {
+    let file_data = include_bytes!("fixtures/chunked_deflate.h5");
+    let fp = parse_filter_pipeline_from_fixture(file_data, "data");
+    // h5py writes deflate with flags=1 (optional), name="deflate"
+    assert!(fp.filters.iter().any(|f| f.filter_id == FILTER_DEFLATE));
+    let deflate = fp.filters.iter().find(|f| f.filter_id == FILTER_DEFLATE).unwrap();
+    assert_eq!(deflate.client_data, vec![6]);
+}
+
+#[test]
+fn fixture_chunked_shuffle_deflate_filter_pipeline() {
+    let file_data = include_bytes!("fixtures/chunked_shuffle_deflate.h5");
+    let fp = parse_filter_pipeline_from_fixture(file_data, "data");
+    assert_eq!(fp.filters.len(), 2);
+    assert_eq!(fp.filters[0].filter_id, FILTER_SHUFFLE);
+    assert_eq!(fp.filters[0].client_data, vec![8]); // element_size=8 for f64
+    assert_eq!(fp.filters[1].filter_id, FILTER_DEFLATE);
+    assert_eq!(fp.filters[1].client_data, vec![6]);
+}
+
+#[test]
+fn fixture_chunked_fletcher32_filter_pipeline() {
+    let file_data = include_bytes!("fixtures/chunked_fletcher32.h5");
+    let fp = parse_filter_pipeline_from_fixture(file_data, "data");
+    assert_eq!(fp.filters.len(), 1);
+    assert_eq!(fp.filters[0].filter_id, FILTER_FLETCHER32);
+}
+
+#[test]
+fn fixture_chunked_deflate_has_chunked_layout() {
+    let file_data = include_bytes!("fixtures/chunked_deflate.h5");
+    let offset = find_signature(file_data).expect("signature not found");
+    let sb = Superblock::parse(file_data, offset).expect("failed to parse superblock");
+    let addr = resolve_path_any(file_data, &sb, "data").expect("dataset not found");
+    let hdr = ObjectHeader::parse(file_data, addr as usize, sb.offset_size, sb.length_size)
+        .expect("failed to parse object header");
+    let layout_msg = hdr
+        .messages
+        .iter()
+        .find(|m| m.msg_type == MessageType::DataLayout)
+        .expect("no DataLayout message found");
+    let layout = DataLayout::parse(&layout_msg.data, sb.offset_size, sb.length_size)
+        .expect("failed to parse data layout");
+    match layout {
+        DataLayout::Chunked { btree_address, .. } => {
+            assert!(btree_address.is_some(), "btree_address should be set");
+        }
+        other => panic!("expected Chunked layout, got {:?}", other),
+    }
 }

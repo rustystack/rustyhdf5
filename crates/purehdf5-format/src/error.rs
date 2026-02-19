@@ -129,6 +129,23 @@ pub enum FormatError {
     DatasetMissingData,
     /// Dataset is missing shape.
     DatasetMissingShape,
+    /// Invalid filter pipeline version.
+    InvalidFilterPipelineVersion(u8),
+    /// Unsupported filter ID.
+    UnsupportedFilter(u16),
+    /// Filter processing error.
+    FilterError(String),
+    /// Decompression error.
+    DecompressionError(String),
+    /// Compression error.
+    CompressionError(String),
+    /// Fletcher32 checksum mismatch.
+    Fletcher32Mismatch {
+        /// Expected checksum.
+        expected: u32,
+        /// Computed checksum.
+        computed: u32,
+    },
     /// CRC32C checksum mismatch.
     ChecksumMismatch {
         /// The checksum stored in the file.
@@ -287,6 +304,27 @@ impl fmt::Display for FormatError {
             }
             FormatError::DatasetMissingShape => {
                 write!(f, "dataset is missing shape")
+            }
+            FormatError::InvalidFilterPipelineVersion(v) => {
+                write!(f, "invalid filter pipeline version: {v}")
+            }
+            FormatError::UnsupportedFilter(id) => {
+                write!(f, "unsupported filter: {id}")
+            }
+            FormatError::FilterError(ref msg) => {
+                write!(f, "filter error: {msg}")
+            }
+            FormatError::DecompressionError(ref msg) => {
+                write!(f, "decompression error: {msg}")
+            }
+            FormatError::CompressionError(ref msg) => {
+                write!(f, "compression error: {msg}")
+            }
+            FormatError::Fletcher32Mismatch { expected, computed } => {
+                write!(
+                    f,
+                    "fletcher32 mismatch: expected {expected:#010x}, computed {computed:#010x}"
+                )
             }
             FormatError::ChecksumMismatch { expected, computed } => {
                 write!(
