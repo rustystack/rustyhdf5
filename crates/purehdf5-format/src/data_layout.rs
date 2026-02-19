@@ -30,6 +30,10 @@ pub enum DataLayout {
         version: u8,
         /// Chunk index type (v4 only).
         chunk_index_type: Option<u8>,
+        /// Filtered size for v4 single chunk with filters.
+        single_chunk_filtered_size: Option<u64>,
+        /// Filter mask for v4 single chunk with filters.
+        single_chunk_filter_mask: Option<u32>,
     },
     /// Virtual dataset layout (v4 only).
     Virtual {
@@ -150,6 +154,8 @@ impl DataLayout {
                     btree_address,
                     version: 3,
                     chunk_index_type: None,
+                    single_chunk_filtered_size: None,
+                    single_chunk_filter_mask: None,
                 })
             }
             _ => Err(FormatError::InvalidLayoutClass(layout_class)),
@@ -231,17 +237,25 @@ impl DataLayout {
                 let chunk_index_type = data[p];
                 p += 1;
 
-                // Parse index-specific address
+                // Parse index-specific fields
+                let mut single_chunk_filtered_size = None;
+                let mut single_chunk_filter_mask = None;
                 let btree_address = match chunk_index_type {
                     1 => {
                         // Single chunk
-                        let filters_present = flags & 0x01 != 0;
+                        // H5O_LAYOUT_CHUNK_SINGLE_INDEX_WITH_FILTER = 0x02
+                        let filters_present = flags & 0x02 != 0;
                         if filters_present {
-                            // filters(4) + filtered_size(length_size) + address(offset_size)
+                            // filtered_size(length_size) + filter_mask(4) + address(offset_size)
                             let ls = length_size as usize;
                             let os = offset_size as usize;
-                            ensure_len(data, p, 4 + ls + os)?;
-                            p += 4 + ls;
+                            ensure_len(data, p, ls + 4 + os)?;
+                            single_chunk_filtered_size = Some(read_length(data, p, length_size)?);
+                            p += ls;
+                            single_chunk_filter_mask = Some(u32::from_le_bytes([
+                                data[p], data[p + 1], data[p + 2], data[p + 3],
+                            ]));
+                            p += 4;
                             if is_undefined(data, p, offset_size) {
                                 None
                             } else {
@@ -257,8 +271,38 @@ impl DataLayout {
                             }
                         }
                     }
+                    2 => {
+                        // Implicit: just address
+                        ensure_len(data, p, offset_size as usize)?;
+                        if is_undefined(data, p, offset_size) {
+                            None
+                        } else {
+                            Some(read_offset(data, p, offset_size)?)
+                        }
+                    }
+                    3 | 4 => {
+                        // Fixed Array (3) or Extensible Array (4):
+                        // max_dblk_page_nelmts_bits(1) + address(offset_size)
+                        ensure_len(data, p, 1 + offset_size as usize)?;
+                        p += 1; // skip max_dblk_page_nelmts_bits
+                        if is_undefined(data, p, offset_size) {
+                            None
+                        } else {
+                            Some(read_offset(data, p, offset_size)?)
+                        }
+                    }
+                    5 => {
+                        // B-tree v2: node_size(4) + split_percent(1) + merge_percent(1) + address
+                        ensure_len(data, p, 6 + offset_size as usize)?;
+                        p += 6;
+                        if is_undefined(data, p, offset_size) {
+                            None
+                        } else {
+                            Some(read_offset(data, p, offset_size)?)
+                        }
+                    }
                     _ => {
-                        // Other index types (2-5): read address
+                        // Unknown index type: try just address
                         ensure_len(data, p, offset_size as usize)?;
                         if is_undefined(data, p, offset_size) {
                             None
@@ -273,6 +317,8 @@ impl DataLayout {
                     btree_address,
                     version: 4,
                     chunk_index_type: Some(chunk_index_type),
+                    single_chunk_filtered_size,
+                    single_chunk_filter_mask,
                 })
             }
             3 => {
@@ -349,6 +395,8 @@ mod tests {
                 btree_address: Some(0x2000),
                 version: 3,
                 chunk_index_type: None,
+                single_chunk_filtered_size: None,
+                single_chunk_filter_mask: None,
             }
         );
     }
@@ -395,6 +443,8 @@ mod tests {
                 btree_address: Some(0x3000),
                 version: 4,
                 chunk_index_type: Some(1),
+                single_chunk_filtered_size: None,
+                single_chunk_filter_mask: None,
             }
         );
     }
@@ -402,14 +452,14 @@ mod tests {
     #[test]
     fn v4_chunked_single_chunk_with_filters() {
         let mut buf = vec![4u8, 2]; // version=4, class=2
-        buf.push(0x01); // flags bit 0 = filters present
+        buf.push(0x02); // flags bit 1 = single chunk with filter
         buf.push(1); // dimensionality=1
         buf.push(4); // dim_size_encoded_length=4
         buf.extend_from_slice(&128u32.to_le_bytes()); // dim 0
         buf.push(1); // chunk_index_type=1 (single chunk)
-        // filters present: chunk_filters(4), chunk_filtered_size(8), chunk_address(8)
-        buf.extend_from_slice(&0u32.to_le_bytes()); // filters
+        // filters present: filtered_size(8) + filter_mask(4) + address(8)
         buf.extend_from_slice(&1024u64.to_le_bytes()); // filtered size
+        buf.extend_from_slice(&0u32.to_le_bytes()); // filter mask
         buf.extend_from_slice(&0x4000u64.to_le_bytes()); // address
         let layout = DataLayout::parse(&buf, 8, 8).unwrap();
         assert_eq!(
@@ -419,6 +469,8 @@ mod tests {
                 btree_address: Some(0x4000),
                 version: 4,
                 chunk_index_type: Some(1),
+                single_chunk_filtered_size: Some(1024),
+                single_chunk_filter_mask: Some(0),
             }
         );
     }

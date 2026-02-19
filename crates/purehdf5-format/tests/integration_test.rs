@@ -423,3 +423,55 @@ fn chunked_nofilter_read_values() {
         assert_eq!(values[i], i as f64, "mismatch at index {i}");
     }
 }
+
+// --- V4 Layout Index Type Tests ---
+
+#[test]
+fn v4_single_chunk_read() {
+    let file_data = include_bytes!("fixtures/v4_single_chunk.h5");
+    let (raw, datatype, _) = read_chunked_dataset(file_data, "small");
+    let values = read_as_f64(&raw, &datatype).unwrap();
+    assert_eq!(values, vec![1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn v4_single_chunk_deflate_read() {
+    let file_data = include_bytes!("fixtures/v4_single_chunk_deflate.h5");
+    let (raw, datatype, _) = read_chunked_dataset(file_data, "small");
+    let values = read_as_f64(&raw, &datatype).unwrap();
+    assert_eq!(values, vec![1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn v4_implicit_read() {
+    // Note: h5py 3.14/HDF5 1.14 uses Fixed Array (type 3) even without filters
+    let file_data = include_bytes!("fixtures/v4_implicit.h5");
+    let (raw, datatype, _) = read_chunked_dataset(file_data, "data");
+    let values = read_as_f64(&raw, &datatype).unwrap();
+    assert_eq!(values.len(), 100);
+    for i in 0..100 {
+        assert_eq!(values[i], i as f64, "mismatch at index {i}");
+    }
+}
+
+#[test]
+fn v4_fixed_array_read() {
+    let file_data = include_bytes!("fixtures/v4_fixed_array.h5");
+    let (raw, datatype, _) = read_chunked_dataset(file_data, "data");
+    let values = read_as_f64(&raw, &datatype).unwrap();
+    assert_eq!(values.len(), 100);
+    for i in 0..100 {
+        assert_eq!(values[i], i as f64, "mismatch at index {i}");
+    }
+}
+
+#[test]
+fn v4_2d_fixed_array_read() {
+    let file_data = include_bytes!("fixtures/v4_2d.h5");
+    let (raw, datatype, _) = read_chunked_dataset(file_data, "matrix");
+    let values = read_as_f32(&raw, &datatype).unwrap();
+    assert_eq!(values.len(), 60);
+    for i in 0..60 {
+        assert!((values[i] - i as f32).abs() < 1e-6, "mismatch at index {i}: got {}", values[i]);
+    }
+}
