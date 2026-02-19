@@ -4,6 +4,7 @@
 //! link messages, contiguous datasets, and inline attributes.
 
 use crate::attribute::AttributeMessage;
+use crate::chunked_write::{ChunkOptions, build_chunked_data_at_ext};
 use crate::dataspace::{Dataspace, DataspaceType};
 use crate::datatype::{CharacterSet, Datatype, DatatypeByteOrder, StringPadding};
 use crate::error::FormatError;
@@ -135,6 +136,27 @@ fn simple_1d(n: u64) -> Dataspace {
 
 // ---- OH builders ----
 
+fn build_chunked_dataset_oh(
+    dt: &Datatype,
+    ds: &Dataspace,
+    layout_message: &[u8],
+    pipeline_message: Option<&[u8]>,
+    attrs: &[AttributeMessage],
+) -> Vec<u8> {
+    let mut w = ObjectHeaderWriter::new();
+    w.add_message_with_flags(MessageType::Datatype, dt.serialize(), 0x01);
+    w.add_message(MessageType::Dataspace, ds.serialize(LENGTH_SIZE));
+    w.add_message_with_flags(MessageType::FillValue, vec![3, 0x0a], 0x01);
+    w.add_message(MessageType::DataLayout, layout_message.to_vec());
+    if let Some(pm) = pipeline_message {
+        w.add_message(MessageType::FilterPipeline, pm.to_vec());
+    }
+    for attr in attrs {
+        w.add_message(MessageType::Attribute, attr.serialize(LENGTH_SIZE));
+    }
+    w.serialize()
+}
+
 fn build_dataset_oh(
     dt: &Datatype, ds: &Dataspace, data_addr: u64, data_size: u64,
     attrs: &[AttributeMessage],
@@ -203,13 +225,15 @@ pub struct DatasetBuilder {
     name: String,
     datatype: Option<Datatype>,
     shape: Option<Vec<u64>>,
+    maxshape: Option<Vec<u64>>,
     data: Option<Vec<u8>>,
     attrs: Vec<(String, AttrValue)>,
+    chunk_options: ChunkOptions,
 }
 
 impl DatasetBuilder {
     fn new(name: &str) -> Self {
-        Self { name: name.to_string(), datatype: None, shape: None, data: None, attrs: Vec::new() }
+        Self { name: name.to_string(), datatype: None, shape: None, maxshape: None, data: None, attrs: Vec::new(), chunk_options: ChunkOptions::default() }
     }
 
     pub fn with_f64_data(&mut self, data: &[f64]) -> &mut Self {
@@ -260,8 +284,40 @@ impl DatasetBuilder {
         self
     }
 
+    /// Set maximum dimensions for a resizable dataset.
+    /// Use `u64::MAX` for unlimited dimensions.
+    /// Implies chunked storage if not already set.
+    pub fn with_maxshape(&mut self, maxshape: &[u64]) -> &mut Self {
+        self.maxshape = Some(maxshape.to_vec());
+        self
+    }
+
     pub fn set_attr(&mut self, name: &str, value: AttrValue) -> &mut Self {
         self.attrs.push((name.to_string(), value));
+        self
+    }
+
+    /// Enable chunked storage with given chunk dimensions.
+    pub fn with_chunks(&mut self, chunk_dims: &[u64]) -> &mut Self {
+        self.chunk_options.chunk_dims = Some(chunk_dims.to_vec());
+        self
+    }
+
+    /// Enable deflate compression (implies chunked if not already set).
+    pub fn with_deflate(&mut self, level: u32) -> &mut Self {
+        self.chunk_options.deflate_level = Some(level);
+        self
+    }
+
+    /// Enable shuffle filter (usually combined with deflate).
+    pub fn with_shuffle(&mut self) -> &mut Self {
+        self.chunk_options.shuffle = true;
+        self
+    }
+
+    /// Enable fletcher32 checksum.
+    pub fn with_fletcher32(&mut self) -> &mut Self {
+        self.chunk_options.fletcher32 = true;
         self
     }
 }
@@ -330,17 +386,15 @@ impl FileWriter {
     }
 
     pub fn finish(self) -> Result<Vec<u8>, FormatError> {
-        // Key insight: dataset OH size is independent of data address (always 8 bytes).
-        // So we can compute sizes with a dummy address, assign real addresses, then rebuild.
-
-        // 1. Extract structured info from builders
+        // Extract structured info from builders
         struct DsFlat {
             name: String,
             dt: Datatype,
             ds: Dataspace,
             raw: Vec<u8>,
             attrs: Vec<AttributeMessage>,
-            _parent: usize, // 0=root, 1..=N = group index+1
+            chunk_options: ChunkOptions,
+            maxshape: Option<Vec<u64>>,
         }
         struct GrpFlat {
             name: String,
@@ -350,26 +404,25 @@ impl FileWriter {
 
         let mut all_ds: Vec<DsFlat> = Vec::new();
         let mut groups: Vec<GrpFlat> = Vec::new();
-
-        // Root datasets
         let mut root_ds_indices: Vec<usize> = Vec::new();
+
         for db in self.root_datasets {
             let dt = db.datatype.ok_or(FormatError::DatasetMissingData)?;
             let shape = db.shape.ok_or(FormatError::DatasetMissingShape)?;
             let raw = db.data.ok_or(FormatError::DatasetMissingData)?;
+            let max_dimensions = db.maxshape.clone();
             let dspace = Dataspace {
                 space_type: if shape.is_empty() { DataspaceType::Scalar } else { DataspaceType::Simple },
-                rank: shape.len() as u8, dimensions: shape, max_dimensions: None,
+                rank: shape.len() as u8, dimensions: shape, max_dimensions,
             };
             let mut attrs = Vec::new();
             for (n, v) in &db.attrs { attrs.push(build_attr_message(n, v)); }
             let idx = all_ds.len();
             root_ds_indices.push(idx);
-            all_ds.push(DsFlat { name: db.name, dt, ds: dspace, raw, attrs, _parent: 0 });
+            all_ds.push(DsFlat { name: db.name, dt, ds: dspace, raw, attrs, chunk_options: db.chunk_options, maxshape: db.maxshape });
         }
 
-        // Groups + their datasets
-        for (gi, g) in self.groups.into_iter().enumerate() {
+        for g in self.groups.into_iter() {
             let mut gattrs = Vec::new();
             for (n, v) in &g.attrs { gattrs.push(build_attr_message(n, v)); }
             let mut ds_idx = Vec::new();
@@ -377,31 +430,37 @@ impl FileWriter {
                 let dt = db.datatype.ok_or(FormatError::DatasetMissingData)?;
                 let shape = db.shape.ok_or(FormatError::DatasetMissingShape)?;
                 let raw = db.data.ok_or(FormatError::DatasetMissingData)?;
+                let max_dimensions = db.maxshape.clone();
                 let dspace = Dataspace {
                     space_type: if shape.is_empty() { DataspaceType::Scalar } else { DataspaceType::Simple },
-                    rank: shape.len() as u8, dimensions: shape, max_dimensions: None,
+                    rank: shape.len() as u8, dimensions: shape, max_dimensions,
                 };
                 let mut attrs = Vec::new();
                 for (n, v) in &db.attrs { attrs.push(build_attr_message(n, v)); }
                 let idx = all_ds.len();
                 ds_idx.push(idx);
-                all_ds.push(DsFlat { name: db.name, dt, ds: dspace, raw, attrs, _parent: gi + 1 });
+                all_ds.push(DsFlat { name: db.name, dt, ds: dspace, raw, attrs, chunk_options: db.chunk_options, maxshape: db.maxshape });
             }
             groups.push(GrpFlat { name: g.name, attrs: gattrs, ds_indices: ds_idx });
         }
 
-        // Root attrs
         let mut root_attrs: Vec<AttributeMessage> = Vec::new();
         for (n, v) in &self.root_attrs { root_attrs.push(build_attr_message(n, v)); }
 
-        // 2. Compute OH sizes with dummy addresses (data_addr=0)
-        let ds_oh_sizes: Vec<usize> = all_ds.iter().map(|d| {
-            build_dataset_oh(&d.dt, &d.ds, 0, d.raw.len() as u64, &d.attrs).len()
+        // Separate contiguous vs chunked datasets
+        let is_chunked: Vec<bool> = all_ds.iter().map(|d| {
+            d.chunk_options.is_chunked() || d.maxshape.is_some()
         }).collect();
 
-        // Group OH sizes depend on link messages, which depend on child addresses.
-        // But link message size doesn't depend on the address value (always 8 bytes for offset_size=8).
-        // So group OH size is also stable.
+        // For contiguous datasets: OH size is stable (address doesn't affect size)
+        // For chunked datasets: we need to build the chunked data blob first to know
+        // the layout message content, then build the OH.
+        //
+        // Strategy: Two passes.
+        // Pass 1: Compute group OH sizes (stable), contiguous dataset OH sizes (stable).
+        //         For chunked datasets, build a dummy OH to get approximate size.
+        // Pass 2: Assign addresses, build chunked blobs at correct addresses, build final OHs.
+
         let group_oh_sizes: Vec<usize> = groups.iter().map(|g| {
             let dummy_links: Vec<LinkMessage> = g.ds_indices.iter().map(|&i| {
                 make_link(&all_ds[i].name, 0)
@@ -409,7 +468,6 @@ impl FileWriter {
             build_group_oh(&dummy_links, &g.attrs).len()
         }).collect();
 
-        // Root group: links to root datasets + links to groups
         let root_dummy_links: Vec<LinkMessage> = {
             let mut links = Vec::new();
             for &i in &root_ds_indices { links.push(make_link(&all_ds[i].name, 0)); }
@@ -418,43 +476,103 @@ impl FileWriter {
         };
         let root_oh_size = build_group_oh(&root_dummy_links, &root_attrs).len();
 
-        // 3. Assign addresses
+        // Two-pass address assignment.
+        // Pass 1: Build chunked data blobs with dummy base address to learn OH sizes.
+        // Pass 2: Rebuild with correct addresses.
+
+        struct DataBlob {
+            data: Vec<u8>,
+            oh_bytes: Vec<u8>,
+        }
+
+        // Pass 1: build blobs with dummy addresses to get actual OH sizes
+        let mut dummy_blobs: Vec<DataBlob> = Vec::new();
+        let mut dummy_cursor = 0u64; // dummy, just for sizing
+        for (i, d) in all_ds.iter().enumerate() {
+            if is_chunked[i] {
+                let chunk_dims = d.chunk_options.resolve_chunk_dims(&d.ds.dimensions);
+                let elem_size = d.dt.type_size() as usize;
+                let result = build_chunked_data_at_ext(
+                    &d.raw, &d.ds.dimensions, &chunk_dims, elem_size,
+                    &d.chunk_options, dummy_cursor, d.maxshape.as_deref(),
+                )?;
+                dummy_cursor += result.data_bytes.len() as u64;
+                let oh = build_chunked_dataset_oh(
+                    &d.dt, &d.ds, &result.layout_message,
+                    result.pipeline_message.as_deref(), &d.attrs,
+                );
+                dummy_blobs.push(DataBlob { data: result.data_bytes, oh_bytes: oh });
+            } else {
+                let oh = build_dataset_oh(
+                    &d.dt, &d.ds, 0, d.raw.len() as u64, &d.attrs,
+                );
+                dummy_blobs.push(DataBlob { data: d.raw.clone(), oh_bytes: oh });
+            }
+        }
+
+        let actual_ds_oh_sizes: Vec<usize> = dummy_blobs.iter().map(|b| b.oh_bytes.len()).collect();
+
+        // Pass 2: compute real addresses
         let root_group_addr = SUPERBLOCK_SIZE as u64;
-        let mut cursor = SUPERBLOCK_SIZE + root_oh_size;
+        let mut cursor2 = SUPERBLOCK_SIZE + root_oh_size;
 
-        // Group OH addresses
-        let group_addrs: Vec<u64> = group_oh_sizes.iter().map(|&sz| {
-            let addr = cursor as u64;
-            cursor += sz;
+        let group_addrs2: Vec<u64> = group_oh_sizes.iter().map(|&sz| {
+            let addr = cursor2 as u64;
+            cursor2 += sz;
             addr
         }).collect();
 
-        // Dataset OH addresses
-        let ds_oh_addrs: Vec<u64> = ds_oh_sizes.iter().map(|&sz| {
-            let addr = cursor as u64;
-            cursor += sz;
+        let ds_oh_addrs2: Vec<u64> = actual_ds_oh_sizes.iter().map(|&sz| {
+            let addr = cursor2 as u64;
+            cursor2 += sz;
             addr
         }).collect();
 
-        // Raw data addresses
-        let ds_data_addrs: Vec<u64> = all_ds.iter().map(|d| {
-            let addr = cursor as u64;
-            cursor += d.raw.len();
-            addr
-        }).collect();
+        // Now rebuild data blobs with correct base addresses
+        let mut ds_blobs2: Vec<DataBlob> = Vec::new();
+        for (i, d) in all_ds.iter().enumerate() {
+            if is_chunked[i] {
+                let chunk_dims = d.chunk_options.resolve_chunk_dims(&d.ds.dimensions);
+                let elem_size = d.dt.type_size() as usize;
+                let base_address = cursor2 as u64;
+                let result = build_chunked_data_at_ext(
+                    &d.raw, &d.ds.dimensions, &chunk_dims, elem_size,
+                    &d.chunk_options, base_address, d.maxshape.as_deref(),
+                )?;
+                cursor2 += result.data_bytes.len();
 
-        let eof_addr = cursor as u64;
+                let oh = build_chunked_dataset_oh(
+                    &d.dt, &d.ds, &result.layout_message,
+                    result.pipeline_message.as_deref(), &d.attrs,
+                );
 
-        // 4. Build actual bytes
-        let mut buf = Vec::with_capacity(cursor);
+                ds_blobs2.push(DataBlob { data: result.data_bytes, oh_bytes: oh });
+            } else {
+                let oh = build_dataset_oh(
+                    &d.dt, &d.ds, cursor2 as u64, d.raw.len() as u64, &d.attrs,
+                );
+                let data = d.raw.clone();
+                cursor2 += data.len();
+                ds_blobs2.push(DataBlob { data, oh_bytes: oh });
+            }
+        }
 
-        // Superblock
+        // Verify OH sizes are stable between pass 1 and pass 2
+        let actual_ds_oh_sizes2: Vec<usize> = ds_blobs2.iter().map(|b| b.oh_bytes.len()).collect();
+        debug_assert_eq!(actual_ds_oh_sizes, actual_ds_oh_sizes2);
+
+        let ds_oh_addrs_final = &ds_oh_addrs2;
+        let group_addrs_final = &group_addrs2;
+        let eof_addr2 = cursor2 as u64;
+
+        let mut buf = Vec::with_capacity(cursor2);
+
         let sb = Superblock {
             version: 3,
             offset_size: OFFSET_SIZE,
             length_size: LENGTH_SIZE,
             base_address: 0,
-            eof_address: eof_addr,
+            eof_address: eof_addr2,
             root_group_address: root_group_addr,
             group_leaf_node_k: None,
             group_internal_node_k: None,
@@ -463,41 +581,39 @@ impl FileWriter {
             driver_info_address: None,
             consistency_flags: 0,
             superblock_extension_address: Some(u64::MAX),
-            checksum: None, // computed by serialize()
+            checksum: None,
         };
         buf.extend_from_slice(&sb.serialize());
 
         // Root group OH
         let mut root_links: Vec<LinkMessage> = Vec::new();
         for &i in &root_ds_indices {
-            root_links.push(make_link(&all_ds[i].name, ds_oh_addrs[i]));
+            root_links.push(make_link(&all_ds[i].name, ds_oh_addrs_final[i]));
         }
         for (gi, g) in groups.iter().enumerate() {
-            root_links.push(make_link(&g.name, group_addrs[gi]));
+            root_links.push(make_link(&g.name, group_addrs_final[gi]));
         }
         buf.extend_from_slice(&build_group_oh(&root_links, &root_attrs));
 
         // Group OHs
         for g in &groups {
             let links: Vec<LinkMessage> = g.ds_indices.iter().map(|&i| {
-                make_link(&all_ds[i].name, ds_oh_addrs[i])
+                make_link(&all_ds[i].name, ds_oh_addrs_final[i])
             }).collect();
             buf.extend_from_slice(&build_group_oh(&links, &g.attrs));
         }
 
         // Dataset OHs
-        for (i, d) in all_ds.iter().enumerate() {
-            buf.extend_from_slice(&build_dataset_oh(
-                &d.dt, &d.ds, ds_data_addrs[i], d.raw.len() as u64, &d.attrs,
-            ));
+        for blob in &ds_blobs2 {
+            buf.extend_from_slice(&blob.oh_bytes);
         }
 
-        // Raw data
-        for d in &all_ds {
-            buf.extend_from_slice(&d.raw);
+        // Data
+        for blob in &ds_blobs2 {
+            buf.extend_from_slice(&blob.data);
         }
 
-        debug_assert_eq!(buf.len(), cursor);
+        debug_assert_eq!(buf.len(), cursor2);
         Ok(buf)
     }
 }
@@ -725,16 +841,10 @@ mod tests {
     // ---- h5py round-trip tests ----
 
     #[cfg(feature = "std")]
-    fn h5py_read(path: &std::path::Path, script: &str) -> String {
-        let output = std::process::Command::new("python3")
-            .args(["-c", script])
-            .output()
-            .expect("python3 not found");
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            panic!("h5py script failed: {stderr}");
-        }
-        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    fn h5py_read(_path: &std::path::Path, script: &str) -> String {
+        let o = std::process::Command::new("python3").args(["-c", script]).output().expect("python3");
+        if !o.status.success() { panic!("h5py: {}", String::from_utf8_lossy(&o.stderr)); }
+        String::from_utf8(o.stdout).unwrap().trim().to_string()
     }
 
     #[cfg(feature = "std")]
@@ -850,6 +960,249 @@ mod tests {
         assert_eq!(v["c"], serde_json::json!([3.0]));
     }
 
+    // ---- Chunked dataset read helper ----
+
+    fn read_dataset_f64_any(bytes: &[u8], path: &str) -> Vec<f64> {
+        let sig = signature::find_signature(bytes).unwrap();
+        let sb = Superblock::parse(bytes, sig).unwrap();
+        let addr = resolve_path_any(bytes, &sb, path).unwrap();
+        let hdr = ObjectHeader::parse(bytes, addr as usize, sb.offset_size, sb.length_size).unwrap();
+        let dt_data = &hdr.messages.iter().find(|m| m.msg_type == MessageType::Datatype).unwrap().data;
+        let ds_data = &hdr.messages.iter().find(|m| m.msg_type == MessageType::Dataspace).unwrap().data;
+        let dl_data = &hdr.messages.iter().find(|m| m.msg_type == MessageType::DataLayout).unwrap().data;
+        let (dt, _) = Datatype::parse(dt_data).unwrap();
+        let ds = Dataspace::parse(ds_data, sb.length_size).unwrap();
+        let dl = DataLayout::parse(dl_data, sb.offset_size, sb.length_size).unwrap();
+
+        match &dl {
+            DataLayout::Chunked { .. } => {
+                // Parse pipeline if present
+                let pipeline = hdr.messages.iter()
+                    .find(|m| m.msg_type == MessageType::FilterPipeline)
+                    .map(|m| crate::filter_pipeline::FilterPipeline::parse(&m.data).unwrap());
+                let raw = crate::chunked_read::read_chunked_data(
+                    bytes, &dl, &ds, &dt, pipeline.as_ref(), sb.offset_size, sb.length_size,
+                ).unwrap();
+                data_read::read_as_f64(&raw, &dt).unwrap()
+            }
+            _ => {
+                let raw = data_read::read_raw_data(bytes, &dl, &ds, &dt).unwrap();
+                data_read::read_as_f64(&raw, &dt).unwrap()
+            }
+        }
+    }
+
+    // ---- Chunked write self round-trip tests ----
+
+    #[test]
+    fn chunked_1d_single_chunk_no_compression() {
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[10])
+            .with_chunks(&[10]);
+        let bytes = fw.finish().unwrap();
+        let result = read_dataset_f64_any(&bytes, "data");
+        assert_eq!(result, data);
+    }
+
+    #[cfg(feature = "deflate")]
+    #[test]
+    fn chunked_1d_single_chunk_deflate() {
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[100])
+            .with_chunks(&[100])
+            .with_deflate(6);
+        let bytes = fw.finish().unwrap();
+        let result = read_dataset_f64_any(&bytes, "data");
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn chunked_1d_multi_chunk_no_compression() {
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[20])
+            .with_chunks(&[8]);
+        let bytes = fw.finish().unwrap();
+        let result = read_dataset_f64_any(&bytes, "data");
+        assert_eq!(result, data);
+    }
+
+    #[cfg(feature = "deflate")]
+    #[test]
+    fn chunked_1d_multi_chunk_deflate() {
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[100])
+            .with_chunks(&[20])
+            .with_deflate(6);
+        let bytes = fw.finish().unwrap();
+        let result = read_dataset_f64_any(&bytes, "data");
+        assert_eq!(result, data);
+    }
+
+    #[cfg(feature = "deflate")]
+    #[test]
+    fn chunked_1d_shuffle_deflate() {
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[100])
+            .with_chunks(&[50])
+            .with_shuffle()
+            .with_deflate(6);
+        let bytes = fw.finish().unwrap();
+        let result = read_dataset_f64_any(&bytes, "data");
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn chunked_2d_no_compression() {
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..24).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[4, 6])
+            .with_chunks(&[2, 3]);
+        let bytes = fw.finish().unwrap();
+        let result = read_dataset_f64_any(&bytes, "data");
+        assert_eq!(result, data);
+    }
+
+    // ---- h5py chunked round-trip tests ----
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn h5py_reads_chunked_no_compression() {
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[100])
+            .with_chunks(&[20]);
+        let bytes = fw.finish().unwrap();
+        let path = std::env::temp_dir().join("purehdf5_chunked_nocomp.h5");
+        std::fs::write(&path, &bytes).unwrap();
+        let script = format!(
+            "import h5py,json; f=h5py.File('{}','r'); d=f['data']; print(json.dumps({{'values':d[:].tolist(),'chunks':list(d.chunks)}}))",
+            path.display()
+        );
+        let stdout = h5py_read(&path, &script);
+        let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let values: Vec<f64> = serde_json::from_value(v["values"].clone()).unwrap();
+        assert_eq!(values, data);
+        assert_eq!(v["chunks"], serde_json::json!([20]));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn h5py_reads_chunked_deflate() {
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[100])
+            .with_chunks(&[20])
+            .with_deflate(6);
+        let bytes = fw.finish().unwrap();
+        let path = std::env::temp_dir().join("purehdf5_chunked_deflate.h5");
+        std::fs::write(&path, &bytes).unwrap();
+        let script = format!(
+            "import h5py,json; f=h5py.File('{}','r'); d=f['data']; print(json.dumps({{'values':d[:].tolist(),'chunks':list(d.chunks),'compression':d.compression}}))",
+            path.display()
+        );
+        let stdout = h5py_read(&path, &script);
+        let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let values: Vec<f64> = serde_json::from_value(v["values"].clone()).unwrap();
+        assert_eq!(values, data);
+        assert_eq!(v["chunks"], serde_json::json!([20]));
+        assert_eq!(v["compression"], serde_json::json!("gzip"));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn h5py_reads_chunked_shuffle_deflate() {
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[100])
+            .with_chunks(&[50])
+            .with_shuffle()
+            .with_deflate(6);
+        let bytes = fw.finish().unwrap();
+        let path = std::env::temp_dir().join("purehdf5_chunked_shuffle_deflate.h5");
+        std::fs::write(&path, &bytes).unwrap();
+        let script = format!(
+            "import h5py,json; f=h5py.File('{}','r'); d=f['data']; print(json.dumps({{'values':d[:].tolist(),'shuffle':bool(d.shuffle),'compression':d.compression}}))",
+            path.display()
+        );
+        let stdout = h5py_read(&path, &script);
+        let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let values: Vec<f64> = serde_json::from_value(v["values"].clone()).unwrap();
+        assert_eq!(values, data);
+        assert_eq!(v["shuffle"], serde_json::json!(true));
+        assert_eq!(v["compression"], serde_json::json!("gzip"));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn h5py_reads_chunked_fletcher32() {
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[100])
+            .with_chunks(&[100])
+            .with_fletcher32();
+        let bytes = fw.finish().unwrap();
+        let path = std::env::temp_dir().join("purehdf5_chunked_fletcher32.h5");
+        std::fs::write(&path, &bytes).unwrap();
+        let script = format!(
+            "import h5py,json; f=h5py.File('{}','r'); d=f['data']; print(json.dumps({{'values':d[:].tolist(),'fletcher32':bool(d.fletcher32)}}))",
+            path.display()
+        );
+        let stdout = h5py_read(&path, &script);
+        let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let values: Vec<f64> = serde_json::from_value(v["values"].clone()).unwrap();
+        assert_eq!(values, data);
+        assert_eq!(v["fletcher32"], serde_json::json!(true));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn h5py_reads_chunked_2d() {
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..24).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[4, 6])
+            .with_chunks(&[2, 3]);
+        let bytes = fw.finish().unwrap();
+        let path = std::env::temp_dir().join("purehdf5_chunked_2d.h5");
+        std::fs::write(&path, &bytes).unwrap();
+        let script = format!(
+            "import h5py,json; f=h5py.File('{}','r'); d=f['data']; print(json.dumps({{'shape':list(d.shape),'chunks':list(d.chunks),'values':d[:].flatten().tolist()}}))",
+            path.display()
+        );
+        let stdout = h5py_read(&path, &script);
+        let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let values: Vec<f64> = serde_json::from_value(v["values"].clone()).unwrap();
+        assert_eq!(values, data);
+        assert_eq!(v["shape"], serde_json::json!([4, 6]));
+        assert_eq!(v["chunks"], serde_json::json!([2, 3]));
+    }
+
     #[cfg(feature = "std")]
     #[test]
     fn h5py_reads_2d_data() {
@@ -868,5 +1221,146 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         assert_eq!(v["shape"], serde_json::json!([2, 3]));
         assert_eq!(v["data"], serde_json::json!([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
+    }
+
+    // ---- Extensible Array / resizable dataset tests ----
+
+    #[test]
+    fn resizable_dataset_self_roundtrip() {
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[20])
+            .with_chunks(&[10])
+            .with_maxshape(&[u64::MAX]);
+        let bytes = fw.finish().unwrap();
+        let result = read_dataset_f64_any(&bytes, "data");
+        assert_eq!(result, data);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn h5py_reads_resizable_dataset() {
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..50).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[50])
+            .with_chunks(&[10])
+            .with_maxshape(&[u64::MAX]);
+        let bytes = fw.finish().unwrap();
+        let path = std::env::temp_dir().join("purehdf5_ea_resizable.h5");
+        std::fs::write(&path, &bytes).unwrap();
+        let script = format!(
+            "import h5py,json; f=h5py.File('{}','r'); d=f['data']; print(json.dumps({{'values':d[:].tolist(),'chunks':list(d.chunks),'maxshape':list(None if x is None else x for x in d.maxshape)}}))",
+            path.display()
+        );
+        let stdout = h5py_read(&path, &script);
+        let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let values: Vec<f64> = serde_json::from_value(v["values"].clone()).unwrap();
+        assert_eq!(values, data);
+        assert_eq!(v["chunks"], serde_json::json!([10]));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn read_h5py_generated_ea_file() {
+        // Generate an EA file with h5py, then read it with Rust
+        let path = std::env::temp_dir().join("purehdf5_h5py_ea.h5");
+        let gen_script = format!(
+            "import h5py,numpy as np; f=h5py.File('{}','w'); d=f.create_dataset('data',data=np.arange(30,dtype='float64'),chunks=(10,),maxshape=(None,)); f.close()",
+            path.display()
+        );
+        h5py_read(&path, &gen_script);
+
+        let bytes = std::fs::read(&path).unwrap();
+        let result = read_dataset_f64_any(&bytes, "data");
+        let expected: Vec<f64> = (0..30).map(|i| i as f64).collect();
+        assert_eq!(result, expected);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn h5py_append_and_verify() {
+        // This is the PRD gate test:
+        // 1. Create a resizable dataset with Rust
+        // 2. Use h5py to append data 3 times
+        // 3. Verify the final data with h5py
+        let mut fw = FileWriter::new();
+        let initial: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&initial)
+            .with_shape(&[10])
+            .with_chunks(&[10])
+            .with_maxshape(&[u64::MAX]);
+        let bytes = fw.finish().unwrap();
+        let path = std::env::temp_dir().join("purehdf5_ea_append.h5");
+        std::fs::write(&path, &bytes).unwrap();
+
+        // Append 3 times using h5py and verify final data
+        let script = format!(
+            r#"
+import h5py, json, numpy as np
+
+# Read initial data
+f = h5py.File('{}', 'a')
+d = f['data']
+
+# Append 3 batches
+for batch in range(3):
+    old_size = d.shape[0]
+    new_data = np.arange(old_size, old_size + 10, dtype='float64')
+    d.resize(old_size + 10, axis=0)
+    d[old_size:] = new_data
+
+f.close()
+
+# Re-read and verify
+f = h5py.File('{}', 'r')
+d = f['data']
+result = d[:].tolist()
+shape = list(d.shape)
+f.close()
+
+print(json.dumps({{'values': result, 'shape': shape}}))
+"#,
+            path.display(),
+            path.display()
+        );
+        let stdout = h5py_read(&path, &script);
+        let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let values: Vec<f64> = serde_json::from_value(v["values"].clone()).unwrap();
+        let expected: Vec<f64> = (0..40).map(|i| i as f64).collect();
+        assert_eq!(values, expected);
+        assert_eq!(v["shape"], serde_json::json!([40]));
+
+        // Also verify we can read the appended file back with Rust
+        let final_bytes = std::fs::read(&path).unwrap();
+        let final_result = read_dataset_f64_any(&final_bytes, "data");
+        assert_eq!(final_result, expected);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn h5py_reads_resizable_single_chunk() {
+        // Single chunk resizable dataset
+        let mut fw = FileWriter::new();
+        let data: Vec<f64> = (0..5).map(|i| i as f64).collect();
+        fw.create_dataset("data")
+            .with_f64_data(&data)
+            .with_shape(&[5])
+            .with_chunks(&[10])
+            .with_maxshape(&[u64::MAX]);
+        let bytes = fw.finish().unwrap();
+        let path = std::env::temp_dir().join("purehdf5_ea_single.h5");
+        std::fs::write(&path, &bytes).unwrap();
+        let script = format!(
+            "import h5py,json; f=h5py.File('{}','r'); d=f['data']; print(json.dumps(d[:].tolist()))",
+            path.display()
+        );
+        let stdout = h5py_read(&path, &script);
+        let values: Vec<f64> = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(values, data);
     }
 }

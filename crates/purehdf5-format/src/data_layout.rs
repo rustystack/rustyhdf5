@@ -280,11 +280,20 @@ impl DataLayout {
                             Some(read_offset(data, p, offset_size)?)
                         }
                     }
-                    3 | 4 => {
-                        // Fixed Array (3) or Extensible Array (4):
-                        // max_dblk_page_nelmts_bits(1) + address(offset_size)
+                    3 => {
+                        // Fixed Array: max_dblk_page_nelmts_bits(1) + address(offset_size)
                         ensure_len(data, p, 1 + offset_size as usize)?;
                         p += 1; // skip max_dblk_page_nelmts_bits
+                        if is_undefined(data, p, offset_size) {
+                            None
+                        } else {
+                            Some(read_offset(data, p, offset_size)?)
+                        }
+                    }
+                    4 => {
+                        // Extensible Array: 5 creation params + address(offset_size)
+                        ensure_len(data, p, 5 + offset_size as usize)?;
+                        p += 5; // skip EA creation parameters
                         if is_undefined(data, p, offset_size) {
                             None
                         } else {

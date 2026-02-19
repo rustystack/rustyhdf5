@@ -10,6 +10,7 @@ extern crate alloc;
 
 pub mod attribute;
 pub mod chunked_read;
+pub mod chunked_write;
 pub mod file_writer;
 pub mod object_header_writer;
 pub mod btree_v1;
@@ -23,6 +24,7 @@ pub mod link_message;
 pub mod data_layout;
 pub mod data_read;
 pub mod filter_pipeline;
+pub mod extensible_array;
 pub mod fixed_array;
 pub mod filters;
 pub mod dataspace;

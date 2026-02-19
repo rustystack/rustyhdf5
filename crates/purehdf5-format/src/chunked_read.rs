@@ -12,6 +12,7 @@ use crate::datatype::Datatype;
 use crate::error::FormatError;
 use crate::filter_pipeline::FilterPipeline;
 use crate::filters::decompress_chunk;
+use crate::extensible_array::{ExtensibleArrayHeader, read_extensible_array_chunks};
 use crate::fixed_array::{FixedArrayHeader, read_fixed_array_chunks};
 
 /// Information about a single chunk in a chunked dataset.
@@ -294,6 +295,17 @@ pub fn read_chunked_data(
             let spatial_chunk_dims: Vec<u32> = chunk_dimensions[..rank].to_vec();
             let header = FixedArrayHeader::parse(file_data, addr as usize, offset_size, length_size)?;
             read_fixed_array_chunks(
+                file_data, &header, &dataspace.dimensions, &spatial_chunk_dims,
+                elem_size as u32, offset_size, length_size,
+            )?
+        }
+        (4, Some(4)) => {
+            // Extensible Array — use spatial chunk dims only
+            let spatial_chunk_dims: Vec<u32> = chunk_dimensions[..rank].to_vec();
+            let header = ExtensibleArrayHeader::parse(
+                file_data, addr as usize, offset_size, length_size,
+            )?;
+            read_extensible_array_chunks(
                 file_data, &header, &dataspace.dimensions, &spatial_chunk_dims,
                 elem_size as u32, offset_size, length_size,
             )?
