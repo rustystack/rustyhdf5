@@ -131,6 +131,39 @@ impl Dataspace {
         })
     }
 
+    /// Serialize dataspace to HDF5 message bytes (v2 format).
+    pub fn serialize(&self, length_size: u8) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.push(2); // version 2
+        buf.push(self.rank);
+        let flags = if self.max_dimensions.is_some() { 0x01 } else { 0x00 };
+        buf.push(flags);
+        let type_byte = match self.space_type {
+            DataspaceType::Scalar => 0,
+            DataspaceType::Simple => 1,
+            DataspaceType::Null => 2,
+        };
+        buf.push(type_byte);
+        for &dim in &self.dimensions {
+            Self::write_length(&mut buf, dim, length_size);
+        }
+        if let Some(ref max_dims) = self.max_dimensions {
+            for &md in max_dims {
+                Self::write_length(&mut buf, md, length_size);
+            }
+        }
+        buf
+    }
+
+    fn write_length(buf: &mut Vec<u8>, val: u64, size: u8) {
+        match size {
+            2 => buf.extend_from_slice(&(val as u16).to_le_bytes()),
+            4 => buf.extend_from_slice(&(val as u32).to_le_bytes()),
+            8 => buf.extend_from_slice(&val.to_le_bytes()),
+            _ => {}
+        }
+    }
+
     /// Total number of elements. Scalar = 1, Null = 0.
     pub fn num_elements(&self) -> u64 {
         match self.space_type {

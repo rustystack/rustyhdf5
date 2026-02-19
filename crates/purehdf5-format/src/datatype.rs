@@ -547,6 +547,90 @@ impl Datatype {
         }
     }
 
+    /// Serialize datatype to HDF5 message bytes.
+    pub fn serialize(&self) -> Vec<u8> {
+        match self {
+            Datatype::FixedPoint { size, byte_order, signed, bit_offset, bit_precision } => {
+                let mut bf0 = 0u8;
+                if matches!(byte_order, DatatypeByteOrder::BigEndian) { bf0 |= 0x01; }
+                if *signed { bf0 |= 0x08; }
+                let mut buf = Self::build_header(0, 1, [bf0, 0, 0], *size);
+                buf.extend_from_slice(&bit_offset.to_le_bytes());
+                buf.extend_from_slice(&bit_precision.to_le_bytes());
+                buf
+            }
+            Datatype::FloatingPoint { size, byte_order, bit_offset, bit_precision,
+                exponent_location, exponent_size, mantissa_location, mantissa_size, exponent_bias } => {
+                let mut bf0 = 0x20u8; // bit 5: sign location bit (standard IEEE 754)
+                match byte_order {
+                    DatatypeByteOrder::BigEndian => { bf0 |= 0x01; }
+                    DatatypeByteOrder::Vax => { bf0 |= 0x40; }
+                    _ => {}
+                }
+                // bf[1] bits 0-1: mantissa normalization = 2 (MSB not stored, IEEE 754)
+                let bf1 = 0x3fu8; // matching what h5py generates
+                let mut buf = Self::build_header(1, 1, [bf0, bf1, 0], *size);
+                buf.extend_from_slice(&bit_offset.to_le_bytes());
+                buf.extend_from_slice(&bit_precision.to_le_bytes());
+                buf.push(*exponent_location);
+                buf.push(*exponent_size);
+                buf.push(*mantissa_location);
+                buf.push(*mantissa_size);
+                buf.extend_from_slice(&exponent_bias.to_le_bytes());
+                buf
+            }
+            Datatype::String { size, padding, charset } => {
+                let pad_val = match padding {
+                    StringPadding::NullTerminate => 0,
+                    StringPadding::NullPad => 1,
+                    StringPadding::SpacePad => 2,
+                };
+                let cs_val = match charset {
+                    CharacterSet::Ascii => 0,
+                    CharacterSet::Utf8 => 1,
+                };
+                let bf0 = pad_val | (cs_val << 4);
+                Self::build_header(3, 1, [bf0, 0, 0], *size)
+            }
+            Datatype::VariableLength { is_string, padding, charset, base_type } => {
+                let mut bf0 = if *is_string { 0x01u8 } else { 0x00 };
+                if *is_string {
+                    if let Some(ref p) = padding {
+                        let pv = match p {
+                            StringPadding::NullTerminate => 0,
+                            StringPadding::NullPad => 1,
+                            StringPadding::SpacePad => 2,
+                        };
+                        bf0 |= pv << 4;
+                    }
+                }
+                let bf1 = if *is_string {
+                    charset.as_ref().map_or(0, |c| match c {
+                        CharacterSet::Ascii => 0,
+                        CharacterSet::Utf8 => 1,
+                    })
+                } else { 0 };
+                let mut buf = Self::build_header(9, 1, [bf0, bf1, 0], 16);
+                buf.extend_from_slice(&base_type.serialize());
+                buf
+            }
+            _ => {
+                // For other types, serialize as opaque — but we only need the above for the write pipeline
+                Vec::new()
+            }
+        }
+    }
+
+    fn build_header(class: u8, version: u8, bf: [u8; 3], size: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; 8];
+        buf[0] = (class & 0x0F) | ((version & 0x0F) << 4);
+        buf[1] = bf[0];
+        buf[2] = bf[1];
+        buf[3] = bf[2];
+        buf[4..8].copy_from_slice(&size.to_le_bytes());
+        buf
+    }
+
     /// Return the size in bytes of one element of this type.
     pub fn type_size(&self) -> u32 {
         match self {

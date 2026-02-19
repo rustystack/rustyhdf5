@@ -78,6 +78,40 @@ fn ensure_len(data: &[u8], needed: usize) -> Result<(), FormatError> {
 }
 
 impl Superblock {
+    /// Serialize this superblock to bytes.
+    ///
+    /// Always writes v2/v3 format. Computes and appends Jenkins lookup3 checksum.
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(48);
+        buf.extend_from_slice(&HDF5_SIGNATURE);
+        buf.push(self.version);
+        buf.push(self.offset_size);
+        buf.push(self.length_size);
+        buf.push(self.consistency_flags as u8);
+        // base_address
+        Self::write_offset(&mut buf, self.base_address, self.offset_size);
+        // superblock extension address
+        let ext_addr = self.superblock_extension_address.unwrap_or(u64::MAX);
+        Self::write_offset(&mut buf, ext_addr, self.offset_size);
+        // eof_address
+        Self::write_offset(&mut buf, self.eof_address, self.offset_size);
+        // root_group_address
+        Self::write_offset(&mut buf, self.root_group_address, self.offset_size);
+        // checksum
+        let checksum = crate::checksum::jenkins_lookup3(&buf);
+        buf.extend_from_slice(&checksum.to_le_bytes());
+        buf
+    }
+
+    fn write_offset(buf: &mut Vec<u8>, val: u64, size: u8) {
+        match size {
+            2 => buf.extend_from_slice(&(val as u16).to_le_bytes()),
+            4 => buf.extend_from_slice(&(val as u32).to_le_bytes()),
+            8 => buf.extend_from_slice(&val.to_le_bytes()),
+            _ => {}
+        }
+    }
+
     /// Parse a superblock from `data` starting at `signature_offset`.
     ///
     /// The signature must be present at the given offset.

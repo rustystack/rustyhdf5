@@ -73,6 +73,86 @@ fn ensure_len(data: &[u8], pos: usize, needed: usize) -> Result<(), FormatError>
 }
 
 impl LinkMessage {
+    /// Serialize link message to HDF5 message bytes.
+    pub fn serialize(&self, offset_size: u8) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.push(1); // version
+
+        let name_bytes = self.name.as_bytes();
+        let name_len = name_bytes.len();
+        let name_size_width: u8 = if name_len <= 0xFF { 1 }
+            else if name_len <= 0xFFFF { 2 }
+            else { 4 };
+
+        let is_hard = matches!(self.link_target, LinkTarget::Hard { .. });
+        let has_link_type = !is_hard;
+        let has_creation_order = self.creation_order.is_some();
+        let has_charset = self.charset != CharacterSet::Ascii;
+
+        let mut flags: u8 = 0;
+        if has_creation_order { flags |= 0x01; }
+        if has_link_type { flags |= 0x02; }
+        if has_charset { flags |= 0x04; }
+        let size_bits = match name_size_width { 1 => 0u8, 2 => 1, 4 => 2, _ => 3 };
+        flags |= size_bits << 4;
+        buf.push(flags);
+
+        if has_link_type {
+            match &self.link_target {
+                LinkTarget::Soft { .. } => buf.push(1),
+                LinkTarget::External { .. } => buf.push(64),
+                _ => {}
+            }
+        }
+
+        if let Some(co) = self.creation_order {
+            buf.extend_from_slice(&co.to_le_bytes());
+        }
+
+        if has_charset {
+            buf.push(match self.charset {
+                CharacterSet::Ascii => 0,
+                CharacterSet::Utf8 => 1,
+            });
+        }
+
+        match name_size_width {
+            1 => buf.push(name_len as u8),
+            2 => buf.extend_from_slice(&(name_len as u16).to_le_bytes()),
+            4 => buf.extend_from_slice(&(name_len as u32).to_le_bytes()),
+            _ => buf.extend_from_slice(&(name_len as u64).to_le_bytes()),
+        }
+        buf.extend_from_slice(name_bytes);
+
+        match &self.link_target {
+            LinkTarget::Hard { object_header_address } => {
+                match offset_size {
+                    2 => buf.extend_from_slice(&(*object_header_address as u16).to_le_bytes()),
+                    4 => buf.extend_from_slice(&(*object_header_address as u32).to_le_bytes()),
+                    8 => buf.extend_from_slice(&object_header_address.to_le_bytes()),
+                    _ => {}
+                }
+            }
+            LinkTarget::Soft { target_path } => {
+                let path_bytes = target_path.as_bytes();
+                buf.extend_from_slice(&(path_bytes.len() as u16).to_le_bytes());
+                buf.extend_from_slice(path_bytes);
+            }
+            LinkTarget::External { filename, object_path } => {
+                let mut ext_data = Vec::new();
+                ext_data.push(0); // flags
+                ext_data.extend_from_slice(filename.as_bytes());
+                ext_data.push(0);
+                ext_data.extend_from_slice(object_path.as_bytes());
+                ext_data.push(0);
+                buf.extend_from_slice(&(ext_data.len() as u16).to_le_bytes());
+                buf.extend_from_slice(&ext_data);
+            }
+        }
+
+        buf
+    }
+
     /// Parse a Link message from raw message data.
     ///
     /// `offset_size` is needed for hard link target addresses.

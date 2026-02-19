@@ -123,6 +123,12 @@ pub enum FormatError {
     },
     /// Variable-length data error.
     VlDataError(String),
+    /// Serialization error.
+    SerializationError(String),
+    /// Dataset is missing data.
+    DatasetMissingData,
+    /// Dataset is missing shape.
+    DatasetMissingShape,
     /// CRC32C checksum mismatch.
     ChecksumMismatch {
         /// The checksum stored in the file.
@@ -272,6 +278,15 @@ impl fmt::Display for FormatError {
             }
             FormatError::VlDataError(ref msg) => {
                 write!(f, "variable-length data error: {msg}")
+            }
+            FormatError::SerializationError(ref msg) => {
+                write!(f, "serialization error: {msg}")
+            }
+            FormatError::DatasetMissingData => {
+                write!(f, "dataset is missing data")
+            }
+            FormatError::DatasetMissingShape => {
+                write!(f, "dataset is missing shape")
             }
             FormatError::ChecksumMismatch { expected, computed } => {
                 write!(

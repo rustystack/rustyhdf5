@@ -160,6 +160,29 @@ impl AttributeMessage {
         })
     }
 
+    /// Serialize attribute message (v2 format, no padding).
+    pub fn serialize(&self, length_size: u8) -> Vec<u8> {
+        let name_bytes = {
+            let mut n = self.name.as_bytes().to_vec();
+            n.push(0); // null terminator
+            n
+        };
+        let dt_bytes = self.datatype.serialize();
+        let ds_bytes = self.dataspace.serialize(length_size);
+
+        let mut buf = Vec::new();
+        buf.push(2); // version 2
+        buf.push(0); // flags
+        buf.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&(dt_bytes.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&(ds_bytes.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&name_bytes);
+        buf.extend_from_slice(&dt_bytes);
+        buf.extend_from_slice(&ds_bytes);
+        buf.extend_from_slice(&self.raw_data);
+        buf
+    }
+
     /// Read attribute value as f64 values.
     pub fn read_as_f64(&self) -> Result<Vec<f64>, FormatError> {
         data_read::read_as_f64(&self.raw_data, &self.datatype)

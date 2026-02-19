@@ -9,6 +9,8 @@
 extern crate alloc;
 
 pub mod attribute;
+pub mod file_writer;
+pub mod object_header_writer;
 pub mod btree_v1;
 pub mod checksum;
 pub mod btree_v2;
