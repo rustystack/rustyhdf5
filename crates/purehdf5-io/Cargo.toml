@@ -2,3 +2,8 @@
 name = "purehdf5-io"
 version = "0.1.0"
 edition = "2021"
+description = "I/O abstraction layer for purehdf5"
+license = "MIT"
+repository = "https://github.com/nicosalm/purehdf5-rs"
+keywords = ["hdf5", "io", "science", "data"]
+categories = ["filesystem", "science"]

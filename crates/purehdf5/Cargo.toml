@@ -2,3 +2,9 @@
 name = "purehdf5"
 version = "0.1.0"
 edition = "2021"
+description = "Pure-Rust HDF5 reader/writer — no C dependencies"
+license = "MIT"
+repository = "https://github.com/nicosalm/purehdf5-rs"
+keywords = ["hdf5", "science", "data", "binary"]
+categories = ["parser-implementations", "science", "encoding"]
+readme = "../../README.md"

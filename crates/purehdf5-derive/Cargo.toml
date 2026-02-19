@@ -2,6 +2,11 @@
 name = "purehdf5-derive"
 version = "0.1.0"
 edition = "2021"
+description = "Derive macros for purehdf5 HDF5 traits"
+license = "MIT"
+repository = "https://github.com/nicosalm/purehdf5-rs"
+keywords = ["hdf5", "derive", "macros", "science"]
+categories = ["development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true
