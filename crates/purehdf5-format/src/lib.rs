@@ -9,6 +9,13 @@
 extern crate alloc;
 
 pub mod btree_v1;
+pub mod checksum;
+pub mod btree_v2;
+pub mod fractal_heap;
+pub mod group_info;
+pub mod group_v2;
+pub mod link_info;
+pub mod link_message;
 pub mod data_layout;
 pub mod data_read;
 pub mod dataspace;

@@ -268,8 +268,8 @@ impl ObjectHeader {
 
         let mut pos = offset + 6;
 
-        // Optional timestamps (flags bit 2)
-        let (access_time, modification_time, change_time, birth_time) = if flags & 0x04 != 0 {
+        // Optional timestamps (flags bit 5)
+        let (access_time, modification_time, change_time, birth_time) = if flags & 0x20 != 0 {
             ensure_len(data, pos, 16)?;
             let at = LittleEndian::read_u32(&data[pos..pos + 4]);
             let mt = LittleEndian::read_u32(&data[pos + 4..pos + 8]);
@@ -308,7 +308,7 @@ impl ObjectHeader {
         #[cfg(feature = "checksum")]
         {
             let stored = LittleEndian::read_u32(&data[chunk0_msg_end..chunk0_msg_end + 4]);
-            let computed = crc32c::crc32c(&data[offset..chunk0_msg_end]);
+            let computed = crate::checksum::jenkins_lookup3(&data[offset..chunk0_msg_end]);
             if computed != stored {
                 return Err(FormatError::ChecksumMismatch {
                     expected: stored,
@@ -317,7 +317,7 @@ impl ObjectHeader {
             }
         }
 
-        // Bit 2 of object header flags controls both timestamps and creation order in messages
+        // Bit 2: attribute creation order tracked → messages include creation order field
         let has_creation_order = flags & 0x04 != 0;
 
         // Parse messages from chunk0
@@ -455,7 +455,7 @@ impl ObjectHeader {
         #[cfg(feature = "checksum")]
         {
             let stored = LittleEndian::read_u32(&data[checksum_pos..checksum_pos + 4]);
-            let computed = crc32c::crc32c(&data[offset..checksum_pos]);
+            let computed = crate::checksum::jenkins_lookup3(&data[offset..checksum_pos]);
             if computed != stored {
                 return Err(FormatError::ChecksumMismatch {
                     expected: stored,
@@ -517,16 +517,19 @@ mod tests {
         timestamps: Option<(u32, u32, u32, u32)>,
     ) -> Vec<u8> {
         let has_creation_order = flags & 0x04 != 0;
+        let has_timestamps = flags & 0x20 != 0;
         let mut buf = Vec::new();
         buf.extend_from_slice(&OHDR_SIGNATURE); // 4
         buf.push(2); // version
         buf.push(flags);
 
-        if let Some((at, mt, ct, bt)) = timestamps {
-            buf.extend_from_slice(&at.to_le_bytes());
-            buf.extend_from_slice(&mt.to_le_bytes());
-            buf.extend_from_slice(&ct.to_le_bytes());
-            buf.extend_from_slice(&bt.to_le_bytes());
+        if has_timestamps {
+            if let Some((at, mt, ct, bt)) = timestamps {
+                buf.extend_from_slice(&at.to_le_bytes());
+                buf.extend_from_slice(&mt.to_le_bytes());
+                buf.extend_from_slice(&ct.to_le_bytes());
+                buf.extend_from_slice(&bt.to_le_bytes());
+            }
         }
 
         if flags & 0x10 != 0 {
@@ -559,7 +562,7 @@ mod tests {
         buf.extend_from_slice(&msg_bytes);
 
         // Checksum (CRC32C of everything from OHDR to here)
-        let checksum = crc32c::crc32c(&buf);
+        let checksum = crate::checksum::jenkins_lookup3(&buf);
         buf.extend_from_slice(&checksum.to_le_bytes());
         buf
     }
@@ -622,7 +625,7 @@ mod tests {
     #[test]
     fn parse_v2_with_timestamps() {
         let data = build_v2_header(
-            0x04,
+            0x20,
             &[(0x01, &[1], 0)],
             Some((100, 200, 300, 400)),
         );
@@ -632,15 +635,17 @@ mod tests {
         assert_eq!(hdr.change_time, Some(300));
         assert_eq!(hdr.birth_time, Some(400));
         assert_eq!(hdr.messages.len(), 1);
-        // With flags bit 2 set, creation order should be present
-        assert!(hdr.messages[0].creation_order.is_some());
+        // flags bit 5 = timestamps, but bit 2 not set → no creation order in messages
+        assert!(hdr.messages[0].creation_order.is_none());
     }
 
     #[test]
     fn parse_v2_creation_order() {
-        // flags bit 2 enables both timestamps and creation order tracking
+        // flags bit 2 enables attribute/message creation order tracking
+        // flags bit 5 enables timestamps
+        // Use 0x24 = bit 2 + bit 5
         let data = build_v2_header(
-            0x04,
+            0x24,
             &[(0x03, &[9], 0), (0x05, &[8], 0)],
             Some((0, 0, 0, 0)),
         );
@@ -648,6 +653,7 @@ mod tests {
         assert_eq!(hdr.messages.len(), 2);
         assert!(hdr.messages[0].creation_order.is_some());
         assert!(hdr.messages[1].creation_order.is_some());
+        assert_eq!(hdr.access_time, Some(0));
     }
 
     #[test]
@@ -719,7 +725,7 @@ mod tests {
         ochk_buf.extend_from_slice(&(ochk_msg_data.len() as u16).to_le_bytes());
         ochk_buf.push(0); // msg flags
         ochk_buf.extend_from_slice(&ochk_msg_data);
-        let checksum = crc32c::crc32c(&ochk_buf);
+        let checksum = crate::checksum::jenkins_lookup3(&ochk_buf);
         ochk_buf.extend_from_slice(&checksum.to_le_bytes());
 
         let ochk_length = ochk_buf.len();

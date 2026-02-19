@@ -90,6 +90,24 @@ pub enum FormatError {
     InvalidSymbolTableNodeVersion(u8),
     /// Path not found during group traversal.
     PathNotFound(String),
+    /// Invalid Link message version.
+    InvalidLinkVersion(u8),
+    /// Invalid link type code.
+    InvalidLinkType(u8),
+    /// Invalid Link Info message version.
+    InvalidLinkInfoVersion(u8),
+    /// Invalid Group Info message version.
+    InvalidGroupInfoVersion(u8),
+    /// Invalid B-tree v2 signature.
+    InvalidBTreeV2Signature,
+    /// Invalid B-tree v2 version.
+    InvalidBTreeV2Version(u8),
+    /// Invalid fractal heap signature.
+    InvalidFractalHeapSignature,
+    /// Invalid fractal heap version.
+    InvalidFractalHeapVersion(u8),
+    /// Invalid heap ID type.
+    InvalidHeapIdType(u8),
     /// CRC32C checksum mismatch.
     ChecksumMismatch {
         /// The checksum stored in the file.
@@ -197,6 +215,33 @@ impl fmt::Display for FormatError {
             }
             FormatError::PathNotFound(ref p) => {
                 write!(f, "path not found: {p}")
+            }
+            FormatError::InvalidLinkVersion(v) => {
+                write!(f, "invalid link message version: {v}")
+            }
+            FormatError::InvalidLinkType(t) => {
+                write!(f, "invalid link type: {t}")
+            }
+            FormatError::InvalidLinkInfoVersion(v) => {
+                write!(f, "invalid link info message version: {v}")
+            }
+            FormatError::InvalidGroupInfoVersion(v) => {
+                write!(f, "invalid group info message version: {v}")
+            }
+            FormatError::InvalidBTreeV2Signature => {
+                write!(f, "invalid B-tree v2 signature")
+            }
+            FormatError::InvalidBTreeV2Version(v) => {
+                write!(f, "invalid B-tree v2 version: {v}")
+            }
+            FormatError::InvalidFractalHeapSignature => {
+                write!(f, "invalid fractal heap signature")
+            }
+            FormatError::InvalidFractalHeapVersion(v) => {
+                write!(f, "invalid fractal heap version: {v}")
+            }
+            FormatError::InvalidHeapIdType(t) => {
+                write!(f, "invalid heap ID type: {t}")
             }
             FormatError::ChecksumMismatch { expected, computed } => {
                 write!(

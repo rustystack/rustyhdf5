@@ -240,7 +240,7 @@ impl Superblock {
         // Validate checksum if feature enabled
         #[cfg(feature = "checksum")]
         {
-            let computed = crc32c::crc32c(&d[..pos]);
+            let computed = crate::checksum::jenkins_lookup3(&d[..pos]);
             if computed != stored_checksum {
                 return Err(FormatError::ChecksumMismatch {
                     expected: stored_checksum,
@@ -355,7 +355,7 @@ mod tests {
         write_offset(&mut buf, 48, offset_size); // root group obj hdr
 
         // Compute CRC32C of everything so far
-        let checksum = crc32c::crc32c(&buf);
+        let checksum = crate::checksum::jenkins_lookup3(&buf);
         buf.extend_from_slice(&checksum.to_le_bytes());
         buf
     }
