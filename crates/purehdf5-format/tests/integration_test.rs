@@ -1,7 +1,9 @@
+use purehdf5_format::attribute::{extract_attributes, find_attribute};
 use purehdf5_format::data_layout::DataLayout;
 use purehdf5_format::data_read::{read_as_f64, read_raw_data};
 use purehdf5_format::dataspace::Dataspace;
 use purehdf5_format::datatype::Datatype;
+use purehdf5_format::group_v2::resolve_path_any;
 use purehdf5_format::message_type::MessageType;
 use purehdf5_format::object_header::ObjectHeader;
 use purehdf5_format::signature::find_signature;
@@ -90,4 +92,167 @@ fn read_simple_dataset_values() {
     let raw = read_raw_data(file_data, &layout, &dataspace, &datatype).unwrap();
     let values = read_as_f64(&raw, &datatype).unwrap();
     assert_eq!(values, vec![1.0, 2.0, 3.0]);
+}
+
+// ============================================================
+// Attribute integration tests
+// ============================================================
+
+#[test]
+fn attrs_h5_dataset_description() {
+    let file_data = include_bytes!("fixtures/attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let data_addr = resolve_path_any(file_data, &sb, "data").unwrap();
+    let hdr = ObjectHeader::parse(file_data, data_addr as usize, sb.offset_size, sb.length_size).unwrap();
+    let attrs = extract_attributes(&hdr, sb.length_size).unwrap();
+
+    let desc = find_attribute(&attrs, "description").expect("description attr not found");
+    let s = desc.read_as_string().unwrap();
+    assert_eq!(s, "test dataset");
+}
+
+#[test]
+fn attrs_h5_dataset_version() {
+    let file_data = include_bytes!("fixtures/attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let data_addr = resolve_path_any(file_data, &sb, "data").unwrap();
+    let hdr = ObjectHeader::parse(file_data, data_addr as usize, sb.offset_size, sb.length_size).unwrap();
+    let attrs = extract_attributes(&hdr, sb.length_size).unwrap();
+
+    let version_attr = find_attribute(&attrs, "version").expect("version attr not found");
+    let vals = version_attr.read_as_i64().unwrap();
+    assert_eq!(vals, vec![42]);
+}
+
+#[test]
+fn attrs_h5_dataset_scale() {
+    let file_data = include_bytes!("fixtures/attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let data_addr = resolve_path_any(file_data, &sb, "data").unwrap();
+    let hdr = ObjectHeader::parse(file_data, data_addr as usize, sb.offset_size, sb.length_size).unwrap();
+    let attrs = extract_attributes(&hdr, sb.length_size).unwrap();
+
+    let scale_attr = find_attribute(&attrs, "scale").expect("scale attr not found");
+    let vals = scale_attr.read_as_f64().unwrap();
+    assert_eq!(vals.len(), 1);
+    assert!((vals[0] - 3.14).abs() < 1e-10);
+}
+
+#[test]
+fn attrs_h5_root_file_type() {
+    let file_data = include_bytes!("fixtures/attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let root_addr = sb.root_group_address as usize;
+    let hdr = ObjectHeader::parse(file_data, root_addr, sb.offset_size, sb.length_size).unwrap();
+    let attrs = extract_attributes(&hdr, sb.length_size).unwrap();
+
+    let ft = find_attribute(&attrs, "file_type").expect("file_type attr not found");
+    let s = ft.read_as_string().unwrap();
+    assert_eq!(s, "experiment");
+}
+
+#[test]
+fn mixed_attrs_h5_temperatures() {
+    let file_data = include_bytes!("fixtures/mixed_attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let exp_addr = resolve_path_any(file_data, &sb, "experiment").unwrap();
+    let hdr = ObjectHeader::parse(file_data, exp_addr as usize, sb.offset_size, sb.length_size).unwrap();
+    let attrs = extract_attributes(&hdr, sb.length_size).unwrap();
+
+    let temp = find_attribute(&attrs, "temperatures").expect("temperatures attr not found");
+    let vals = temp.read_as_f64().unwrap();
+    assert_eq!(vals.len(), 3);
+    assert!((vals[0] - 22.5).abs() < 1e-10);
+    assert!((vals[1] - 23.1).abs() < 1e-10);
+    assert!((vals[2] - 21.8).abs() < 1e-10);
+}
+
+#[test]
+fn mixed_attrs_h5_name() {
+    let file_data = include_bytes!("fixtures/mixed_attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let exp_addr = resolve_path_any(file_data, &sb, "experiment").unwrap();
+    let hdr = ObjectHeader::parse(file_data, exp_addr as usize, sb.offset_size, sb.length_size).unwrap();
+    let attrs = extract_attributes(&hdr, sb.length_size).unwrap();
+
+    let name_attr = find_attribute(&attrs, "name").expect("name attr not found");
+    let s = name_attr.read_as_string().unwrap();
+    assert_eq!(s, "run_001");
+}
+
+#[test]
+fn mixed_attrs_h5_iterations() {
+    let file_data = include_bytes!("fixtures/mixed_attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let exp_addr = resolve_path_any(file_data, &sb, "experiment").unwrap();
+    let hdr = ObjectHeader::parse(file_data, exp_addr as usize, sb.offset_size, sb.length_size).unwrap();
+    let attrs = extract_attributes(&hdr, sb.length_size).unwrap();
+
+    let iter_attr = find_attribute(&attrs, "iterations").expect("iterations attr not found");
+    let vals = iter_attr.read_as_i64().unwrap();
+    assert_eq!(vals, vec![1000]);
+}
+
+#[test]
+fn vl_strings_h5_names_dataset() {
+    let file_data = include_bytes!("fixtures/vl_strings.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let names_addr = resolve_path_any(file_data, &sb, "names").unwrap();
+    let hdr = ObjectHeader::parse(file_data, names_addr as usize, sb.offset_size, sb.length_size).unwrap();
+
+    // Get dataspace
+    let ds_msg = hdr.messages.iter().find(|m| m.msg_type == MessageType::Dataspace).unwrap();
+    let dataspace = Dataspace::parse(&ds_msg.data, sb.length_size).unwrap();
+    assert_eq!(dataspace.num_elements(), 3);
+
+    // Get datatype - should be VL string
+    let dt_msg = hdr.messages.iter().find(|m| m.msg_type == MessageType::Datatype).unwrap();
+    let (datatype, _) = Datatype::parse(&dt_msg.data).unwrap();
+    match &datatype {
+        Datatype::VariableLength { is_string, .. } => assert!(is_string),
+        other => panic!("expected VL string type, got {other:?}"),
+    }
+
+    // Get layout and read raw data
+    let dl_msg = hdr.messages.iter().find(|m| m.msg_type == MessageType::DataLayout).unwrap();
+    let layout = DataLayout::parse(&dl_msg.data, sb.offset_size, sb.length_size).unwrap();
+    let raw = read_raw_data(file_data, &layout, &dataspace, &datatype).unwrap();
+
+    // Resolve VL strings
+    let strings = purehdf5_format::vl_data::read_vl_strings(
+        file_data, &raw, dataspace.num_elements(), sb.offset_size, sb.length_size,
+    ).unwrap();
+    assert_eq!(strings, vec!["Alice", "Bob", "Charlie"]);
+}
+
+#[test]
+fn vl_strings_h5_root_vl_attr() {
+    let file_data = include_bytes!("fixtures/vl_strings.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let root_addr = sb.root_group_address as usize;
+    let hdr = ObjectHeader::parse(file_data, root_addr, sb.offset_size, sb.length_size).unwrap();
+    let attrs = extract_attributes(&hdr, sb.length_size).unwrap();
+
+    let vl_attr = find_attribute(&attrs, "vl_attr").expect("vl_attr not found");
+    let strings = vl_attr.read_vl_strings(file_data, sb.offset_size, sb.length_size).unwrap();
+    assert_eq!(strings.len(), 1);
+    assert_eq!(strings[0], "hello variable length");
 }

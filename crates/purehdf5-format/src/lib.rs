@@ -8,6 +8,7 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
+pub mod attribute;
 pub mod btree_v1;
 pub mod checksum;
 pub mod btree_v2;
@@ -21,6 +22,7 @@ pub mod data_read;
 pub mod dataspace;
 pub mod datatype;
 pub mod error;
+pub mod global_heap;
 pub mod group_v1;
 pub mod local_heap;
 pub mod message_type;
@@ -28,3 +30,4 @@ pub mod object_header;
 pub mod signature;
 pub mod superblock;
 pub mod symbol_table;
+pub mod vl_data;

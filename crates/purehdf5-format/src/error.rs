@@ -108,6 +108,21 @@ pub enum FormatError {
     InvalidFractalHeapVersion(u8),
     /// Invalid heap ID type.
     InvalidHeapIdType(u8),
+    /// Invalid attribute message version.
+    InvalidAttributeVersion(u8),
+    /// Invalid global heap collection signature.
+    InvalidGlobalHeapSignature,
+    /// Invalid global heap version.
+    InvalidGlobalHeapVersion(u8),
+    /// Global heap object not found.
+    GlobalHeapObjectNotFound {
+        /// Address of the collection.
+        collection_address: u64,
+        /// Index that was not found.
+        index: u16,
+    },
+    /// Variable-length data error.
+    VlDataError(String),
     /// CRC32C checksum mismatch.
     ChecksumMismatch {
         /// The checksum stored in the file.
@@ -242,6 +257,21 @@ impl fmt::Display for FormatError {
             }
             FormatError::InvalidHeapIdType(t) => {
                 write!(f, "invalid heap ID type: {t}")
+            }
+            FormatError::InvalidAttributeVersion(v) => {
+                write!(f, "invalid attribute message version: {v}")
+            }
+            FormatError::InvalidGlobalHeapSignature => {
+                write!(f, "invalid global heap collection signature")
+            }
+            FormatError::InvalidGlobalHeapVersion(v) => {
+                write!(f, "invalid global heap version: {v}")
+            }
+            FormatError::GlobalHeapObjectNotFound { collection_address, index } => {
+                write!(f, "global heap object not found: collection {collection_address:#x}, index {index}")
+            }
+            FormatError::VlDataError(ref msg) => {
+                write!(f, "variable-length data error: {msg}")
             }
             FormatError::ChecksumMismatch { expected, computed } => {
                 write!(
