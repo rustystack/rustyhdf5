@@ -1,5 +1,14 @@
 //! Error types for HDF5 format parsing.
 
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
+
+#[cfg(feature = "std")]
+use std::string::String;
+
 use core::fmt;
 
 /// Errors that can occur when parsing HDF5 binary format structures.
@@ -67,6 +76,20 @@ pub enum FormatError {
         /// Actual size in bytes.
         actual: usize,
     },
+    /// Invalid local heap signature.
+    InvalidLocalHeapSignature,
+    /// Invalid local heap version.
+    InvalidLocalHeapVersion(u8),
+    /// Invalid B-tree v1 signature.
+    InvalidBTreeSignature,
+    /// Invalid B-tree node type.
+    InvalidBTreeNodeType(u8),
+    /// Invalid symbol table node signature.
+    InvalidSymbolTableNodeSignature,
+    /// Invalid symbol table node version.
+    InvalidSymbolTableNodeVersion(u8),
+    /// Path not found during group traversal.
+    PathNotFound(String),
     /// CRC32C checksum mismatch.
     ChecksumMismatch {
         /// The checksum stored in the file.
@@ -153,6 +176,27 @@ impl fmt::Display for FormatError {
                     f,
                     "data size mismatch: expected {expected} bytes, got {actual} bytes"
                 )
+            }
+            FormatError::InvalidLocalHeapSignature => {
+                write!(f, "invalid local heap signature")
+            }
+            FormatError::InvalidLocalHeapVersion(v) => {
+                write!(f, "invalid local heap version: {v}")
+            }
+            FormatError::InvalidBTreeSignature => {
+                write!(f, "invalid B-tree v1 signature")
+            }
+            FormatError::InvalidBTreeNodeType(t) => {
+                write!(f, "invalid B-tree node type: {t}")
+            }
+            FormatError::InvalidSymbolTableNodeSignature => {
+                write!(f, "invalid symbol table node signature")
+            }
+            FormatError::InvalidSymbolTableNodeVersion(v) => {
+                write!(f, "invalid symbol table node version: {v}")
+            }
+            FormatError::PathNotFound(ref p) => {
+                write!(f, "path not found: {p}")
             }
             FormatError::ChecksumMismatch { expected, computed } => {
                 write!(
