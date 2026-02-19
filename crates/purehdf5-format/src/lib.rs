@@ -9,6 +9,7 @@
 extern crate alloc;
 
 pub mod attribute;
+pub mod attribute_info;
 pub mod chunked_read;
 pub mod chunked_write;
 pub mod file_writer;
@@ -35,6 +36,7 @@ pub mod group_v1;
 pub mod local_heap;
 pub mod message_type;
 pub mod object_header;
+pub mod shared_message;
 pub mod signature;
 pub mod superblock;
 pub mod symbol_table;

@@ -1,4 +1,4 @@
-use purehdf5_format::attribute::{extract_attributes, find_attribute};
+use purehdf5_format::attribute::{extract_attributes, extract_attributes_full, find_attribute};
 use purehdf5_format::data_layout::DataLayout;
 use purehdf5_format::data_read::{read_as_f64, read_as_f32, read_as_i32, read_as_i64, read_as_u64, read_as_strings, read_raw_data, read_raw_data_full};
 use purehdf5_format::dataspace::Dataspace;
@@ -1154,3 +1154,155 @@ fn write_roundtrip_large_chunked_i32() {
     assert_eq!(values[0], 0);
     assert_eq!(values[4999], 4999);
 }
+
+// ============================================================
+// Dense Attribute Tests (AttributeInfo + fractal heap + B-tree v2)
+// ============================================================
+
+#[test]
+fn dense_attrs_dataset_count() {
+    let file_data = include_bytes!("fixtures/dense_attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let data_addr = resolve_path_any(file_data, &sb, "data").unwrap();
+    let hdr = ObjectHeader::parse(file_data, data_addr as usize, sb.offset_size, sb.length_size).unwrap();
+
+    // Should have an AttributeInfo message since >8 attrs triggers dense storage
+    let has_attr_info = hdr.messages.iter().any(|m| m.msg_type == MessageType::AttributeInfo);
+    assert!(has_attr_info, "expected AttributeInfo message for dense attributes");
+
+    let attrs = extract_attributes_full(file_data, &hdr, sb.offset_size, sb.length_size).unwrap();
+    assert_eq!(attrs.len(), 50, "expected 50 dense attributes");
+}
+
+#[test]
+fn dense_attrs_dataset_first_attr() {
+    let file_data = include_bytes!("fixtures/dense_attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let data_addr = resolve_path_any(file_data, &sb, "data").unwrap();
+    let hdr = ObjectHeader::parse(file_data, data_addr as usize, sb.offset_size, sb.length_size).unwrap();
+    let attrs = extract_attributes_full(file_data, &hdr, sb.offset_size, sb.length_size).unwrap();
+
+    let attr_000 = find_attribute(&attrs, "attr_000").expect("attr_000 not found");
+    let vals = attr_000.read_as_f64().unwrap();
+    assert_eq!(vals.len(), 1);
+    assert!((vals[0] - 0.0).abs() < 1e-10, "attr_000 should be 0.0, got {}", vals[0]);
+}
+
+#[test]
+fn dense_attrs_dataset_middle_attr() {
+    let file_data = include_bytes!("fixtures/dense_attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let data_addr = resolve_path_any(file_data, &sb, "data").unwrap();
+    let hdr = ObjectHeader::parse(file_data, data_addr as usize, sb.offset_size, sb.length_size).unwrap();
+    let attrs = extract_attributes_full(file_data, &hdr, sb.offset_size, sb.length_size).unwrap();
+
+    let attr_025 = find_attribute(&attrs, "attr_025").expect("attr_025 not found");
+    let vals = attr_025.read_as_f64().unwrap();
+    assert_eq!(vals.len(), 1);
+    assert!((vals[0] - 37.5).abs() < 1e-10, "attr_025 should be 37.5, got {}", vals[0]);
+}
+
+#[test]
+fn dense_attrs_dataset_last_attr() {
+    let file_data = include_bytes!("fixtures/dense_attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let data_addr = resolve_path_any(file_data, &sb, "data").unwrap();
+    let hdr = ObjectHeader::parse(file_data, data_addr as usize, sb.offset_size, sb.length_size).unwrap();
+    let attrs = extract_attributes_full(file_data, &hdr, sb.offset_size, sb.length_size).unwrap();
+
+    let attr_049 = find_attribute(&attrs, "attr_049").expect("attr_049 not found");
+    let vals = attr_049.read_as_f64().unwrap();
+    assert_eq!(vals.len(), 1);
+    assert!((vals[0] - 73.5).abs() < 1e-10, "attr_049 should be 73.5, got {}", vals[0]);
+}
+
+#[test]
+fn dense_attrs_dataset_all_values_correct() {
+    let file_data = include_bytes!("fixtures/dense_attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let data_addr = resolve_path_any(file_data, &sb, "data").unwrap();
+    let hdr = ObjectHeader::parse(file_data, data_addr as usize, sb.offset_size, sb.length_size).unwrap();
+    let attrs = extract_attributes_full(file_data, &hdr, sb.offset_size, sb.length_size).unwrap();
+
+    for i in 0..50 {
+        let name = format!("attr_{i:03}");
+        let attr = find_attribute(&attrs, &name).unwrap_or_else(|| panic!("{name} not found"));
+        let vals = attr.read_as_f64().unwrap();
+        let expected = i as f64 * 1.5;
+        assert!(
+            (vals[0] - expected).abs() < 1e-10,
+            "{name}: expected {expected}, got {}",
+            vals[0]
+        );
+    }
+}
+
+#[test]
+fn dense_attrs_root_group() {
+    let file_data = include_bytes!("fixtures/dense_attrs_root.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let hdr = ObjectHeader::parse(file_data, sb.root_group_address as usize, sb.offset_size, sb.length_size).unwrap();
+    let attrs = extract_attributes_full(file_data, &hdr, sb.offset_size, sb.length_size).unwrap();
+    assert_eq!(attrs.len(), 20, "expected 20 root group dense attributes");
+
+    let attr_00 = find_attribute(&attrs, "root_attr_00").expect("root_attr_00 not found");
+    let vals = attr_00.read_as_f64().unwrap();
+    assert!((vals[0] - 0.0).abs() < 1e-10);
+
+    let attr_19 = find_attribute(&attrs, "root_attr_19").expect("root_attr_19 not found");
+    let vals = attr_19.read_as_f64().unwrap();
+    assert!((vals[0] - 38.0).abs() < 1e-10);
+}
+
+#[test]
+fn dense_attrs_compact_still_works() {
+    // Ensure extract_attributes_full also works for compact (non-dense) attributes
+    let file_data = include_bytes!("fixtures/attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let data_addr = resolve_path_any(file_data, &sb, "data").unwrap();
+    let hdr = ObjectHeader::parse(file_data, data_addr as usize, sb.offset_size, sb.length_size).unwrap();
+
+    // extract_attributes_full should return the same results as extract_attributes for compact
+    let attrs_compact = extract_attributes(&hdr, sb.length_size).unwrap();
+    let attrs_full = extract_attributes_full(file_data, &hdr, sb.offset_size, sb.length_size).unwrap();
+    assert_eq!(attrs_compact.len(), attrs_full.len());
+
+    let desc = find_attribute(&attrs_full, "description").expect("description not found");
+    assert_eq!(desc.read_as_string().unwrap(), "test dataset");
+}
+
+#[test]
+fn dense_attrs_dataset_data_still_readable() {
+    // Ensure the dataset data is still readable alongside dense attrs
+    let file_data = include_bytes!("fixtures/dense_attrs.h5");
+    let offset = find_signature(file_data).unwrap();
+    let sb = Superblock::parse(file_data, offset).unwrap();
+
+    let data_addr = resolve_path_any(file_data, &sb, "data").unwrap();
+    let hdr = ObjectHeader::parse(file_data, data_addr as usize, sb.offset_size, sb.length_size).unwrap();
+
+    let dt_msg = hdr.messages.iter().find(|m| m.msg_type == MessageType::Datatype).unwrap();
+    let ds_msg = hdr.messages.iter().find(|m| m.msg_type == MessageType::Dataspace).unwrap();
+    let dl_msg = hdr.messages.iter().find(|m| m.msg_type == MessageType::DataLayout).unwrap();
+    let (dt, _) = Datatype::parse(&dt_msg.data).unwrap();
+    let ds = Dataspace::parse(&ds_msg.data, sb.length_size).unwrap();
+    let dl = DataLayout::parse(&dl_msg.data, sb.offset_size, sb.length_size).unwrap();
+    let raw = read_raw_data(file_data, &dl, &ds, &dt).unwrap();
+    let values = read_as_f64(&raw, &dt).unwrap();
+    assert_eq!(values, vec![1.0, 2.0, 3.0]);
+}
+

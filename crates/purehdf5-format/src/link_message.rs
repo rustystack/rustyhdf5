@@ -90,11 +90,15 @@ impl LinkMessage {
         let has_charset = self.charset != CharacterSet::Ascii;
 
         let mut flags: u8 = 0;
-        if has_creation_order { flags |= 0x01; }
-        if has_link_type { flags |= 0x02; }
-        if has_charset { flags |= 0x04; }
+        // Bits 0-1: size of name length field
         let size_bits = match name_size_width { 1 => 0u8, 2 => 1, 4 => 2, _ => 3 };
-        flags |= size_bits << 4;
+        flags |= size_bits;
+        // Bit 2: creation order present
+        if has_creation_order { flags |= 0x04; }
+        // Bit 3: link type present
+        if has_link_type { flags |= 0x08; }
+        // Bit 4: charset present
+        if has_charset { flags |= 0x10; }
         buf.push(flags);
 
         if has_link_type {
@@ -165,16 +169,20 @@ impl LinkMessage {
         }
 
         let flags = data[1];
-        let has_creation_order = flags & 0x01 != 0;
-        let has_link_type = flags & 0x02 != 0;
-        let has_charset = flags & 0x04 != 0;
-        let name_size_field_width = match (flags >> 4) & 0x03 {
+        // Bits 0-1: size of the name length field (1/2/4/8 bytes)
+        let name_size_field_width = match flags & 0x03 {
             0 => 1u8,
             1 => 2,
             2 => 4,
             3 => 8,
             _ => unreachable!(),
         };
+        // Bit 2: creation order field present
+        let has_creation_order = flags & 0x04 != 0;
+        // Bit 3: link type field present
+        let has_link_type = flags & 0x08 != 0;
+        // Bit 4: link name character set field present
+        let has_charset = flags & 0x10 != 0;
 
         let mut pos = 2;
 
@@ -308,13 +316,7 @@ mod tests {
         buf.push(1); // version
 
         let mut flags: u8 = 0;
-        if creation_order.is_some() {
-            flags |= 0x01;
-        }
-        // hard link: don't set bit 1 (link type field not present)
-        if charset.is_some() {
-            flags |= 0x04;
-        }
+        // Bits 0-1: name length field size
         let size_bits = match name_size_width {
             1 => 0u8,
             2 => 1,
@@ -322,7 +324,16 @@ mod tests {
             8 => 3,
             _ => 0,
         };
-        flags |= size_bits << 4;
+        flags |= size_bits;
+        // Bit 2: creation order present
+        if creation_order.is_some() {
+            flags |= 0x04;
+        }
+        // hard link: don't set bit 3 (link type field not present)
+        // Bit 4: charset present
+        if charset.is_some() {
+            flags |= 0x10;
+        }
         buf.push(flags);
 
         // no link_type field for hard links (bit 1 not set)
@@ -392,7 +403,7 @@ mod tests {
         let target = "/group1/dataset";
         let mut data = Vec::new();
         data.push(1); // version
-        data.push(0x02); // flags: link type present, no creation order, no charset, name size = 1 byte
+        data.push(0x08); // flags: bit 3 = link type present, name size = 1 byte (bits 0-1 = 0)
         data.push(1); // link type = soft
         data.push(4); // name length = 4
         data.extend_from_slice(b"link");
@@ -434,7 +445,7 @@ mod tests {
     fn invalid_link_type() {
         let mut data = Vec::new();
         data.push(1); // version
-        data.push(0x02); // flags: link type present
+        data.push(0x08); // flags: bit 3 = link type present
         data.push(99); // invalid link type
         data.push(1); // name length = 1
         data.push(b'x');

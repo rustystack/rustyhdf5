@@ -110,6 +110,10 @@ pub enum FormatError {
     InvalidHeapIdType(u8),
     /// Invalid attribute message version.
     InvalidAttributeVersion(u8),
+    /// Invalid Attribute Info message version.
+    InvalidAttributeInfoVersion(u8),
+    /// Invalid shared message version.
+    InvalidSharedMessageVersion(u8),
     /// Invalid global heap collection signature.
     InvalidGlobalHeapSignature,
     /// Invalid global heap version.
@@ -287,6 +291,12 @@ impl fmt::Display for FormatError {
             }
             FormatError::InvalidAttributeVersion(v) => {
                 write!(f, "invalid attribute message version: {v}")
+            }
+            FormatError::InvalidAttributeInfoVersion(v) => {
+                write!(f, "invalid attribute info message version: {v}")
+            }
+            FormatError::InvalidSharedMessageVersion(v) => {
+                write!(f, "invalid shared message version: {v}")
             }
             FormatError::InvalidGlobalHeapSignature => {
                 write!(f, "invalid global heap collection signature")
