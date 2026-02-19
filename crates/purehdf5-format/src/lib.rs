@@ -9,6 +9,7 @@
 extern crate alloc;
 
 pub mod attribute;
+pub mod chunked_read;
 pub mod file_writer;
 pub mod object_header_writer;
 pub mod btree_v1;

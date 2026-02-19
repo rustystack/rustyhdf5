@@ -3,21 +3,36 @@
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, vec::Vec};
 
+use crate::chunked_read::read_chunked_data;
 use crate::data_layout::DataLayout;
 use crate::dataspace::Dataspace;
 use crate::datatype::{Datatype, DatatypeByteOrder};
 use crate::error::FormatError;
+use crate::filter_pipeline::FilterPipeline;
 
 /// Read raw bytes for a dataset given its layout and the file data buffer.
 ///
 /// For compact layouts, returns the inline data.
 /// For contiguous layouts, reads from the address in the file buffer.
-/// Chunked layouts are not yet supported.
+/// For chunked layouts, traverses the B-tree and assembles chunks.
 pub fn read_raw_data(
     file_data: &[u8],
     layout: &DataLayout,
     dataspace: &Dataspace,
     datatype: &Datatype,
+) -> Result<Vec<u8>, FormatError> {
+    read_raw_data_full(file_data, layout, dataspace, datatype, None, 8, 8)
+}
+
+/// Read raw bytes with full parameters including filter pipeline and sizes.
+pub fn read_raw_data_full(
+    file_data: &[u8],
+    layout: &DataLayout,
+    dataspace: &Dataspace,
+    datatype: &Datatype,
+    pipeline: Option<&FilterPipeline>,
+    offset_size: u8,
+    length_size: u8,
 ) -> Result<Vec<u8>, FormatError> {
     let num_elements = dataspace.num_elements() as usize;
     let elem_size = datatype.type_size() as usize;
@@ -51,7 +66,9 @@ pub fn read_raw_data(
             }
             Ok(file_data[addr..addr + sz].to_vec())
         }
-        DataLayout::Chunked { .. } => Err(FormatError::UnsupportedVersion(0)), // placeholder
+        DataLayout::Chunked { .. } => {
+            read_chunked_data(file_data, layout, dataspace, datatype, pipeline, offset_size, length_size)
+        }
         DataLayout::Virtual { .. } => Err(FormatError::UnsupportedVersion(0)),
     }
 }

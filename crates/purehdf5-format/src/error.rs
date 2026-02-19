@@ -146,6 +146,10 @@ pub enum FormatError {
         /// Computed checksum.
         computed: u32,
     },
+    /// Chunked dataset read error.
+    ChunkedReadError(String),
+    /// Chunk assembly error.
+    ChunkAssemblyError(String),
     /// CRC32C checksum mismatch.
     ChecksumMismatch {
         /// The checksum stored in the file.
@@ -325,6 +329,12 @@ impl fmt::Display for FormatError {
                     f,
                     "fletcher32 mismatch: expected {expected:#010x}, computed {computed:#010x}"
                 )
+            }
+            FormatError::ChunkedReadError(ref msg) => {
+                write!(f, "chunked read error: {msg}")
+            }
+            FormatError::ChunkAssemblyError(ref msg) => {
+                write!(f, "chunk assembly error: {msg}")
             }
             FormatError::ChecksumMismatch { expected, computed } => {
                 write!(

@@ -1,6 +1,6 @@
 use purehdf5_format::attribute::{extract_attributes, find_attribute};
 use purehdf5_format::data_layout::DataLayout;
-use purehdf5_format::data_read::{read_as_f64, read_raw_data};
+use purehdf5_format::data_read::{read_as_f64, read_as_f32, read_as_i32, read_raw_data, read_raw_data_full};
 use purehdf5_format::dataspace::Dataspace;
 use purehdf5_format::datatype::Datatype;
 use purehdf5_format::filter_pipeline::{FilterPipeline, FILTER_DEFLATE, FILTER_FLETCHER32, FILTER_SHUFFLE};
@@ -324,5 +324,102 @@ fn fixture_chunked_deflate_has_chunked_layout() {
             assert!(btree_address.is_some(), "btree_address should be set");
         }
         other => panic!("expected Chunked layout, got {:?}", other),
+    }
+}
+
+// --- Chunked Dataset Integration Tests ---
+
+/// Helper to read a chunked dataset from a fixture file.
+fn read_chunked_dataset(file_data: &[u8], dataset_path: &str) -> (Vec<u8>, Datatype, Dataspace) {
+    let offset = find_signature(file_data).expect("signature not found");
+    let sb = Superblock::parse(file_data, offset).expect("failed to parse superblock");
+    let addr = resolve_path_any(file_data, &sb, dataset_path).expect("dataset not found");
+    let hdr = ObjectHeader::parse(file_data, addr as usize, sb.offset_size, sb.length_size)
+        .expect("failed to parse object header");
+
+    let ds_msg = hdr.messages.iter().find(|m| m.msg_type == MessageType::Dataspace).unwrap();
+    let dataspace = Dataspace::parse(&ds_msg.data, sb.length_size).unwrap();
+
+    let dt_msg = hdr.messages.iter().find(|m| m.msg_type == MessageType::Datatype).unwrap();
+    let (datatype, _) = Datatype::parse(&dt_msg.data).unwrap();
+
+    let dl_msg = hdr.messages.iter().find(|m| m.msg_type == MessageType::DataLayout).unwrap();
+    let layout = DataLayout::parse(&dl_msg.data, sb.offset_size, sb.length_size).unwrap();
+
+    let pipeline = hdr.messages.iter()
+        .find(|m| m.msg_type == MessageType::FilterPipeline)
+        .map(|m| FilterPipeline::parse(&m.data).unwrap());
+
+    let raw = read_raw_data_full(
+        file_data, &layout, &dataspace, &datatype,
+        pipeline.as_ref(), sb.offset_size, sb.length_size,
+    ).unwrap();
+
+    (raw, datatype, dataspace)
+}
+
+#[test]
+fn chunked_deflate_read_values() {
+    let file_data = include_bytes!("fixtures/chunked_deflate.h5");
+    let (raw, datatype, _) = read_chunked_dataset(file_data, "data");
+    let values = read_as_f64(&raw, &datatype).unwrap();
+    assert_eq!(values.len(), 100);
+    for i in 0..100 {
+        assert_eq!(values[i], i as f64, "mismatch at index {i}");
+    }
+}
+
+#[test]
+fn chunked_shuffle_deflate_read_values() {
+    let file_data = include_bytes!("fixtures/chunked_shuffle_deflate.h5");
+    let (raw, datatype, _) = read_chunked_dataset(file_data, "data");
+    let values = read_as_f64(&raw, &datatype).unwrap();
+    assert_eq!(values.len(), 100);
+    for i in 0..100 {
+        assert_eq!(values[i], i as f64, "mismatch at index {i}");
+    }
+}
+
+#[test]
+fn chunked_fletcher32_read_values() {
+    let file_data = include_bytes!("fixtures/chunked_fletcher32.h5");
+    let (raw, datatype, _) = read_chunked_dataset(file_data, "data");
+    let values = read_as_f64(&raw, &datatype).unwrap();
+    assert_eq!(values.len(), 100);
+    for i in 0..100 {
+        assert_eq!(values[i], i as f64, "mismatch at index {i}");
+    }
+}
+
+#[test]
+fn chunked_2d_read_values() {
+    let file_data = include_bytes!("fixtures/chunked_2d.h5");
+    let (raw, datatype, _) = read_chunked_dataset(file_data, "matrix");
+    let values = read_as_f32(&raw, &datatype).unwrap();
+    assert_eq!(values.len(), 60);
+    for i in 0..60 {
+        assert!((values[i] - i as f32).abs() < 1e-6, "mismatch at index {i}: got {}", values[i]);
+    }
+}
+
+#[test]
+fn chunked_large_read_values() {
+    let file_data = include_bytes!("fixtures/chunked_large.h5");
+    let (raw, datatype, _) = read_chunked_dataset(file_data, "big");
+    let values = read_as_i32(&raw, &datatype).unwrap();
+    assert_eq!(values.len(), 1000);
+    for i in 0..1000 {
+        assert_eq!(values[i], i as i32, "mismatch at index {i}");
+    }
+}
+
+#[test]
+fn chunked_nofilter_read_values() {
+    let file_data = include_bytes!("fixtures/chunked_nofilter.h5");
+    let (raw, datatype, _) = read_chunked_dataset(file_data, "raw");
+    let values = read_as_f64(&raw, &datatype).unwrap();
+    assert_eq!(values.len(), 50);
+    for i in 0..50 {
+        assert_eq!(values[i], i as f64, "mismatch at index {i}");
     }
 }
