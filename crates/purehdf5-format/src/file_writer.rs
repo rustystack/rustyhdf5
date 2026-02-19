@@ -6,7 +6,7 @@
 use crate::attribute::AttributeMessage;
 use crate::chunked_write::{ChunkOptions, build_chunked_data_at_ext};
 use crate::dataspace::{Dataspace, DataspaceType};
-use crate::datatype::{CharacterSet, Datatype, DatatypeByteOrder, StringPadding};
+use crate::datatype::{CharacterSet, CompoundMember, Datatype, DatatypeByteOrder, EnumMember, StringPadding};
 use crate::error::FormatError;
 use crate::link_message::{LinkMessage, LinkTarget};
 use crate::message_type::MessageType;
@@ -55,6 +55,105 @@ fn make_u8_type() -> Datatype {
     Datatype::FixedPoint {
         size: 1, byte_order: DatatypeByteOrder::LittleEndian,
         signed: false, bit_offset: 0, bit_precision: 8,
+    }
+}
+
+// ---- Compound / Enum / Array type builders ----
+
+/// Builder for constructing HDF5 compound (struct) datatypes.
+pub struct CompoundTypeBuilder {
+    fields: Vec<(String, Datatype)>,
+}
+
+impl CompoundTypeBuilder {
+    pub fn new() -> Self {
+        Self { fields: Vec::new() }
+    }
+
+    /// Add a named field with the given datatype.
+    pub fn field(mut self, name: &str, datatype: Datatype) -> Self {
+        self.fields.push((name.to_string(), datatype));
+        self
+    }
+
+    /// Add an f64 field.
+    pub fn f64_field(self, name: &str) -> Self { self.field(name, make_f64_type()) }
+    /// Add an f32 field.
+    pub fn f32_field(self, name: &str) -> Self { self.field(name, make_f32_type()) }
+    /// Add an i32 field.
+    pub fn i32_field(self, name: &str) -> Self { self.field(name, make_i32_type()) }
+    /// Add an i64 field.
+    pub fn i64_field(self, name: &str) -> Self { self.field(name, make_i64_type()) }
+    /// Add a u8 field.
+    pub fn u8_field(self, name: &str) -> Self { self.field(name, make_u8_type()) }
+
+    /// Build the compound datatype.
+    pub fn build(self) -> Datatype {
+        let mut offset = 0u64;
+        let mut members = Vec::with_capacity(self.fields.len());
+        for (name, dt) in self.fields {
+            let sz = dt.type_size();
+            members.push(CompoundMember {
+                name,
+                byte_offset: offset,
+                datatype: dt,
+            });
+            offset += sz as u64;
+        }
+        Datatype::Compound {
+            size: offset as u32,
+            members,
+        }
+    }
+}
+
+impl Default for CompoundTypeBuilder {
+    fn default() -> Self { Self::new() }
+}
+
+/// Builder for constructing HDF5 enumeration datatypes.
+pub struct EnumTypeBuilder {
+    base_type: Datatype,
+    members: Vec<EnumMember>,
+}
+
+impl EnumTypeBuilder {
+    /// Create a new enum builder with i32 base type.
+    pub fn i32_based() -> Self {
+        Self { base_type: make_i32_type(), members: Vec::new() }
+    }
+
+    /// Create a new enum builder with u8 base type.
+    pub fn u8_based() -> Self {
+        Self { base_type: make_u8_type(), members: Vec::new() }
+    }
+
+    /// Add a named value.
+    pub fn value(mut self, name: &str, val: i32) -> Self {
+        self.members.push(EnumMember {
+            name: name.to_string(),
+            value: val.to_le_bytes().to_vec(),
+        });
+        self
+    }
+
+    /// Add a named u8 value.
+    pub fn u8_value(mut self, name: &str, val: u8) -> Self {
+        self.members.push(EnumMember {
+            name: name.to_string(),
+            value: vec![val],
+        });
+        self
+    }
+
+    /// Build the enumeration datatype.
+    pub fn build(self) -> Datatype {
+        let size = self.base_type.type_size();
+        Datatype::Enumeration {
+            size,
+            base_type: Box::new(self.base_type),
+            members: self.members,
+        }
     }
 }
 
@@ -276,6 +375,53 @@ impl DatasetBuilder {
         self.datatype = Some(make_u8_type());
         self.data = Some(data.to_vec());
         if self.shape.is_none() { self.shape = Some(vec![data.len() as u64]); }
+        self
+    }
+
+    /// Write a compound (struct) dataset.
+    ///
+    /// `datatype` should be built with `CompoundTypeBuilder`.
+    /// `raw_data` is the packed binary data for all elements.
+    /// `num_elements` is the number of compound elements.
+    pub fn with_compound_data(&mut self, datatype: Datatype, raw_data: Vec<u8>, num_elements: u64) -> &mut Self {
+        self.datatype = Some(datatype);
+        self.data = Some(raw_data);
+        if self.shape.is_none() { self.shape = Some(vec![num_elements]); }
+        self
+    }
+
+    /// Write an enum dataset.
+    ///
+    /// `datatype` should be built with `EnumTypeBuilder`.
+    /// `values` are the i32 enum values to write.
+    pub fn with_enum_i32_data(&mut self, datatype: Datatype, values: &[i32]) -> &mut Self {
+        self.datatype = Some(datatype);
+        let mut raw = Vec::with_capacity(values.len() * 4);
+        for &v in values { raw.extend_from_slice(&v.to_le_bytes()); }
+        self.data = Some(raw);
+        if self.shape.is_none() { self.shape = Some(vec![values.len() as u64]); }
+        self
+    }
+
+    /// Write an enum dataset with u8 values.
+    pub fn with_enum_u8_data(&mut self, datatype: Datatype, values: &[u8]) -> &mut Self {
+        self.datatype = Some(datatype);
+        self.data = Some(values.to_vec());
+        if self.shape.is_none() { self.shape = Some(vec![values.len() as u64]); }
+        self
+    }
+
+    /// Write an array-typed dataset.
+    ///
+    /// `base_type` is the element type (e.g., f64), `array_dims` is the fixed array shape
+    /// per element, `raw_data` is the packed data, `num_elements` is the dataset element count.
+    pub fn with_array_data(&mut self, base_type: Datatype, array_dims: &[u32], raw_data: Vec<u8>, num_elements: u64) -> &mut Self {
+        self.datatype = Some(Datatype::Array {
+            base_type: Box::new(base_type),
+            dimensions: array_dims.to_vec(),
+        });
+        self.data = Some(raw_data);
+        if self.shape.is_none() { self.shape = Some(vec![num_elements]); }
         self
     }
 
@@ -838,6 +984,93 @@ mod tests {
         assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 
+    // ---- Compound / Enum / Array write tests ----
+
+    fn read_dataset_raw(bytes: &[u8], path: &str) -> (Vec<u8>, Datatype) {
+        let sig = signature::find_signature(bytes).unwrap();
+        let sb = Superblock::parse(bytes, sig).unwrap();
+        let addr = resolve_path_any(bytes, &sb, path).unwrap();
+        let hdr = ObjectHeader::parse(bytes, addr as usize, sb.offset_size, sb.length_size).unwrap();
+        let dt_data = &hdr.messages.iter().find(|m| m.msg_type == MessageType::Datatype).unwrap().data;
+        let ds_data = &hdr.messages.iter().find(|m| m.msg_type == MessageType::Dataspace).unwrap().data;
+        let dl_data = &hdr.messages.iter().find(|m| m.msg_type == MessageType::DataLayout).unwrap().data;
+        let (dt, _) = Datatype::parse(dt_data).unwrap();
+        let ds = Dataspace::parse(ds_data, sb.length_size).unwrap();
+        let dl = DataLayout::parse(dl_data, sb.offset_size, sb.length_size).unwrap();
+        let raw = data_read::read_raw_data(bytes, &dl, &ds, &dt).unwrap();
+        (raw, dt)
+    }
+
+    #[test]
+    fn file_with_compound_dataset() {
+        let ct = CompoundTypeBuilder::new()
+            .f64_field("x")
+            .f64_field("y")
+            .i32_field("id")
+            .build();
+        let elem_size = ct.type_size() as usize;
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&1.0f64.to_le_bytes());
+        raw.extend_from_slice(&2.0f64.to_le_bytes());
+        raw.extend_from_slice(&10i32.to_le_bytes());
+        raw.extend_from_slice(&3.0f64.to_le_bytes());
+        raw.extend_from_slice(&4.0f64.to_le_bytes());
+        raw.extend_from_slice(&20i32.to_le_bytes());
+        assert_eq!(raw.len(), 2 * elem_size);
+
+        let mut fw = FileWriter::new();
+        fw.create_dataset("particles").with_compound_data(ct, raw.clone(), 2);
+        let bytes = fw.finish().unwrap();
+
+        let (read_raw, dt) = read_dataset_raw(&bytes, "particles");
+        assert_eq!(read_raw, raw);
+        let fields = data_read::read_compound_fields(&read_raw, &dt).unwrap();
+        assert_eq!(fields.len(), 3);
+        let x_vals = data_read::read_as_f64(&fields[0].raw_data, &fields[0].datatype).unwrap();
+        assert_eq!(x_vals, vec![1.0, 3.0]);
+        let id_vals = data_read::read_as_i32(&fields[2].raw_data, &fields[2].datatype).unwrap();
+        assert_eq!(id_vals, vec![10, 20]);
+    }
+
+    #[test]
+    fn file_with_enum_dataset() {
+        let et = EnumTypeBuilder::i32_based()
+            .value("RED", 0)
+            .value("GREEN", 1)
+            .value("BLUE", 2)
+            .build();
+
+        let mut fw = FileWriter::new();
+        fw.create_dataset("colors").with_enum_i32_data(et, &[1, 0, 2, 1]);
+        let bytes = fw.finish().unwrap();
+
+        let (read_raw, dt) = read_dataset_raw(&bytes, "colors");
+        let names = data_read::read_enum_names(&read_raw, &dt).unwrap();
+        assert_eq!(names, vec!["GREEN", "RED", "BLUE", "GREEN"]);
+    }
+
+    #[test]
+    fn file_with_array_dataset() {
+        // Each element is a [3] array of f64
+        let mut raw = Vec::new();
+        for v in &[1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            raw.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let mut fw = FileWriter::new();
+        fw.create_dataset("vectors").with_array_data(
+            make_f64_type(), &[3], raw.clone(), 2,
+        );
+        let bytes = fw.finish().unwrap();
+
+        let (read_raw, dt) = read_dataset_raw(&bytes, "vectors");
+        assert_eq!(read_raw, raw);
+        let (flat, base_dt, dims) = data_read::read_array_flat(&read_raw, &dt).unwrap();
+        assert_eq!(dims, vec![3]);
+        let vals = data_read::read_as_f64(&flat, &base_dt).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
     // ---- h5py round-trip tests ----
 
     #[cfg(feature = "std")]
@@ -959,6 +1192,143 @@ mod tests {
         assert_eq!(v["b"], serde_json::json!([2.0]));
         assert_eq!(v["c"], serde_json::json!([3.0]));
     }
+
+    // ---- Compound / Enum / Array h5py round-trips ----
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn h5py_reads_our_compound_dataset() {
+        let ct = CompoundTypeBuilder::new()
+            .f64_field("x")
+            .f64_field("y")
+            .i32_field("id")
+            .build();
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&1.5f64.to_le_bytes());
+        raw.extend_from_slice(&2.5f64.to_le_bytes());
+        raw.extend_from_slice(&10i32.to_le_bytes());
+        raw.extend_from_slice(&3.5f64.to_le_bytes());
+        raw.extend_from_slice(&4.5f64.to_le_bytes());
+        raw.extend_from_slice(&20i32.to_le_bytes());
+
+        let mut fw = FileWriter::new();
+        fw.create_dataset("particles").with_compound_data(ct, raw, 2);
+        let bytes = fw.finish().unwrap();
+        let path = std::env::temp_dir().join("purehdf5_compound.h5");
+        std::fs::write(&path, &bytes).unwrap();
+        let script = format!(
+            "import h5py,json; f=h5py.File('{}','r'); d=f['particles']; print(json.dumps({{'x':d['x'].tolist(),'y':d['y'].tolist(),'id':d['id'].tolist()}}))",
+            path.display()
+        );
+        let stdout = h5py_read(&path, &script);
+        let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(v["x"], serde_json::json!([1.5, 3.5]));
+        assert_eq!(v["y"], serde_json::json!([2.5, 4.5]));
+        assert_eq!(v["id"], serde_json::json!([10, 20]));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn h5py_reads_our_enum_dataset() {
+        let et = EnumTypeBuilder::i32_based()
+            .value("RED", 0)
+            .value("GREEN", 1)
+            .value("BLUE", 2)
+            .build();
+
+        let mut fw = FileWriter::new();
+        fw.create_dataset("colors").with_enum_i32_data(et, &[1, 0, 2]);
+        let bytes = fw.finish().unwrap();
+        let path = std::env::temp_dir().join("purehdf5_enum.h5");
+        std::fs::write(&path, &bytes).unwrap();
+        let script = format!(
+            "import h5py,json; f=h5py.File('{}','r'); d=f['colors']; print(json.dumps(d[:].tolist()))",
+            path.display()
+        );
+        let stdout = h5py_read(&path, &script);
+        let values: Vec<i32> = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(values, vec![1, 0, 2]);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn h5py_reads_our_array_dataset() {
+        let mut raw = Vec::new();
+        for v in &[1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            raw.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let mut fw = FileWriter::new();
+        fw.create_dataset("vectors").with_array_data(
+            make_f64_type(), &[3], raw, 2,
+        );
+        let bytes = fw.finish().unwrap();
+        let path = std::env::temp_dir().join("purehdf5_array.h5");
+        std::fs::write(&path, &bytes).unwrap();
+        let script = format!(
+            "import h5py,json; f=h5py.File('{}','r'); d=f['vectors']; print(json.dumps({{'shape':list(d.shape),'dtype':str(d.dtype),'values':d[:].tolist()}}))",
+            path.display()
+        );
+        let stdout = h5py_read(&path, &script);
+        let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(v["shape"], serde_json::json!([2]));
+        assert_eq!(v["values"], serde_json::json!([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn read_h5py_generated_compound() {
+        let path = std::env::temp_dir().join("purehdf5_h5py_compound.h5");
+        let gen_script = format!(
+            r#"
+import h5py, numpy as np
+dt = np.dtype([('x', 'f8'), ('y', 'f8'), ('id', 'i4')])
+data = np.array([(1.0, 2.0, 10), (3.0, 4.0, 20)], dtype=dt)
+f = h5py.File('{}', 'w', libver='latest')
+f.create_dataset('particles', data=data)
+f.close()
+"#,
+            path.display()
+        );
+        h5py_read(&path, &gen_script);
+
+        let bytes = std::fs::read(&path).unwrap();
+        let (raw, dt) = read_dataset_raw(&bytes, "particles");
+        let fields = data_read::read_compound_fields(&raw, &dt).unwrap();
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0].name, "x");
+        let x_vals = data_read::read_as_f64(&fields[0].raw_data, &fields[0].datatype).unwrap();
+        assert_eq!(x_vals, vec![1.0, 3.0]);
+        let id_vals = data_read::read_as_i32(&fields[2].raw_data, &fields[2].datatype).unwrap();
+        assert_eq!(id_vals, vec![10, 20]);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn read_h5py_generated_enum() {
+        let path = std::env::temp_dir().join("purehdf5_h5py_enum.h5");
+        let gen_script = format!(
+            r#"
+import h5py, numpy as np
+dt = h5py.enum_dtype({{"RED": 0, "GREEN": 1, "BLUE": 2}}, basetype=np.int32)
+data = np.array([1, 0, 2, 1], dtype=np.int32)
+f = h5py.File('{}', 'w', libver='latest')
+f.create_dataset('colors', data=data, dtype=dt)
+f.close()
+"#,
+            path.display()
+        );
+        h5py_read(&path, &gen_script);
+
+        let bytes = std::fs::read(&path).unwrap();
+        let (raw, dt) = read_dataset_raw(&bytes, "colors");
+        let names = data_read::read_enum_names(&raw, &dt).unwrap();
+        assert_eq!(names, vec!["GREEN", "RED", "BLUE", "GREEN"]);
+    }
+
+    // Note: h5py-generated array type read test is omitted because h5py's
+    // high-level API cannot write array-typed datasets. The h5py_reads_our_array_dataset
+    // test above verifies the write path, and self round-trip tests cover reading.
 
     // ---- Chunked dataset read helper ----
 

@@ -1,7 +1,10 @@
 //! Raw data reading and typed conversion for HDF5 datasets.
 
 #[cfg(not(feature = "std"))]
-use alloc::{string::String, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
+
+#[cfg(feature = "std")]
+use std::collections::BTreeMap;
 
 use crate::chunked_read::read_chunked_data;
 use crate::data_layout::DataLayout;
@@ -309,6 +312,154 @@ pub fn read_as_strings(raw: &[u8], datatype: &Datatype) -> Result<Vec<String>, F
         }
         _ => Err(FormatError::TypeMismatch {
             expected: "String",
+            actual: datatype_name(datatype),
+        }),
+    }
+}
+
+// --- Compound type reading ---
+
+/// A single field extracted from compound data, containing the raw bytes for that field
+/// across all elements.
+#[derive(Debug, Clone)]
+pub struct CompoundFieldData {
+    /// Field name.
+    pub name: String,
+    /// Datatype of this field.
+    pub datatype: Datatype,
+    /// Raw bytes for this field across all elements (len = num_elements * field_type_size).
+    pub raw_data: Vec<u8>,
+}
+
+/// Read compound dataset and return all fields as separate data vectors.
+///
+/// Each returned `CompoundFieldData` contains the raw bytes for that field
+/// across all elements, suitable for further typed conversion with `read_as_f64`, etc.
+pub fn read_compound_fields(raw: &[u8], datatype: &Datatype) -> Result<Vec<CompoundFieldData>, FormatError> {
+    match datatype {
+        Datatype::Compound { size, members } => {
+            let elem_size = *size as usize;
+            if elem_size == 0 {
+                return Ok(Vec::new());
+            }
+            if !raw.len().is_multiple_of(elem_size) {
+                return Err(FormatError::DataSizeMismatch {
+                    expected: 0,
+                    actual: raw.len(),
+                });
+            }
+            let count = raw.len() / elem_size;
+            let mut fields = Vec::with_capacity(members.len());
+            for m in members {
+                let field_size = m.datatype.type_size() as usize;
+                let offset = m.byte_offset as usize;
+                let mut field_raw = Vec::with_capacity(count * field_size);
+                for i in 0..count {
+                    let elem_start = i * elem_size + offset;
+                    field_raw.extend_from_slice(&raw[elem_start..elem_start + field_size]);
+                }
+                fields.push(CompoundFieldData {
+                    name: m.name.clone(),
+                    datatype: m.datatype.clone(),
+                    raw_data: field_raw,
+                });
+            }
+            Ok(fields)
+        }
+        _ => Err(FormatError::TypeMismatch {
+            expected: "Compound",
+            actual: datatype_name(datatype),
+        }),
+    }
+}
+
+/// Extract a single field by name from compound raw data.
+pub fn read_compound_field(raw: &[u8], datatype: &Datatype, field_name: &str) -> Result<CompoundFieldData, FormatError> {
+    let fields = read_compound_fields(raw, datatype)?;
+    fields.into_iter()
+        .find(|f| f.name == field_name)
+        .ok_or_else(|| FormatError::PathNotFound(field_name.into()))
+}
+
+// --- Enum type reading ---
+
+/// A single value from an enum dataset, containing both the integer value and string name.
+#[derive(Debug, Clone)]
+pub struct EnumValue {
+    /// The string name for this enum value.
+    pub name: String,
+    /// The raw integer value.
+    pub raw_value: Vec<u8>,
+}
+
+/// Read enum dataset values, mapping integer values to their string names.
+///
+/// Returns one `EnumValue` per element. Unknown values get name "UNKNOWN(<hex>)".
+pub fn read_enum_values(raw: &[u8], datatype: &Datatype) -> Result<Vec<EnumValue>, FormatError> {
+    match datatype {
+        Datatype::Enumeration { size, members, .. } => {
+            let elem_size = *size as usize;
+            if elem_size == 0 {
+                return Ok(Vec::new());
+            }
+            if !raw.len().is_multiple_of(elem_size) {
+                return Err(FormatError::DataSizeMismatch {
+                    expected: 0,
+                    actual: raw.len(),
+                });
+            }
+            let count = raw.len() / elem_size;
+            // Build lookup map: raw bytes -> name
+            let mut lookup = BTreeMap::new();
+            for m in members {
+                lookup.insert(m.value.clone(), m.name.clone());
+            }
+            let mut result = Vec::with_capacity(count);
+            for i in 0..count {
+                let val_bytes = raw[i * elem_size..(i + 1) * elem_size].to_vec();
+                let name = lookup.get(&val_bytes).cloned().unwrap_or_else(|| {
+                    let hex: Vec<String> = val_bytes.iter().map(|b| {
+                        let mut s = String::new();
+                        core::fmt::Write::write_fmt(&mut s, format_args!("{b:02x}")).ok();
+                        s
+                    }).collect();
+                    let mut result = String::from("UNKNOWN(0x");
+                    for h in &hex { result.push_str(h); }
+                    result.push(')');
+                    result
+                });
+                result.push(EnumValue { name, raw_value: val_bytes });
+            }
+            Ok(result)
+        }
+        _ => Err(FormatError::TypeMismatch {
+            expected: "Enumeration",
+            actual: datatype_name(datatype),
+        }),
+    }
+}
+
+/// Read enum dataset and return just the string names.
+pub fn read_enum_names(raw: &[u8], datatype: &Datatype) -> Result<Vec<String>, FormatError> {
+    let values = read_enum_values(raw, datatype)?;
+    Ok(values.into_iter().map(|v| v.name).collect())
+}
+
+// --- Array type reading ---
+
+/// Read array-typed dataset elements, returning the raw base-type data.
+///
+/// For an array type with dimensions [D1, D2, ...] and base type T,
+/// each dataset element contains D1*D2*... values of type T.
+/// This function returns the raw bytes as a flat buffer that can be
+/// converted with `read_as_f64`, `read_as_i32`, etc. using the base type.
+pub fn read_array_flat(raw: &[u8], datatype: &Datatype) -> Result<(Vec<u8>, Datatype, Vec<u32>), FormatError> {
+    match datatype {
+        Datatype::Array { base_type, dimensions } => {
+            Ok((raw.to_vec(), *base_type.clone(), dimensions.clone()))
+        }
+        _ => Err(FormatError::TypeMismatch {
+            expected: "Array",
             actual: datatype_name(datatype),
         }),
     }
@@ -627,5 +778,115 @@ mod tests {
         let raw = b"abc\0\0\0de\0\0\0\0";
         let result = read_as_strings(raw, &dt).unwrap();
         assert_eq!(result, vec!["abc", "de"]);
+    }
+
+    #[test]
+    fn read_compound_two_fields() {
+        use crate::datatype::CompoundMember;
+        // Compound: { x: f64, id: i32 } => size = 12
+        let dt = Datatype::Compound {
+            size: 12,
+            members: vec![
+                CompoundMember {
+                    name: "x".to_string(),
+                    byte_offset: 0,
+                    datatype: make_f64_le_type(),
+                },
+                CompoundMember {
+                    name: "id".to_string(),
+                    byte_offset: 8,
+                    datatype: make_i32_le_type(),
+                },
+            ],
+        };
+        // Two elements
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&1.5f64.to_le_bytes());
+        raw.extend_from_slice(&10i32.to_le_bytes());
+        raw.extend_from_slice(&2.5f64.to_le_bytes());
+        raw.extend_from_slice(&20i32.to_le_bytes());
+
+        let fields = read_compound_fields(&raw, &dt).unwrap();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "x");
+        let x_vals = read_as_f64(&fields[0].raw_data, &fields[0].datatype).unwrap();
+        assert_eq!(x_vals, vec![1.5, 2.5]);
+
+        assert_eq!(fields[1].name, "id");
+        let id_vals = read_as_i32(&fields[1].raw_data, &fields[1].datatype).unwrap();
+        assert_eq!(id_vals, vec![10, 20]);
+    }
+
+    #[test]
+    fn read_compound_single_field_by_name() {
+        use crate::datatype::CompoundMember;
+        let dt = Datatype::Compound {
+            size: 12,
+            members: vec![
+                CompoundMember {
+                    name: "x".to_string(),
+                    byte_offset: 0,
+                    datatype: make_f64_le_type(),
+                },
+                CompoundMember {
+                    name: "id".to_string(),
+                    byte_offset: 8,
+                    datatype: make_i32_le_type(),
+                },
+            ],
+        };
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&3.14f64.to_le_bytes());
+        raw.extend_from_slice(&42i32.to_le_bytes());
+
+        let field = read_compound_field(&raw, &dt, "id").unwrap();
+        let vals = read_as_i32(&field.raw_data, &field.datatype).unwrap();
+        assert_eq!(vals, vec![42]);
+
+        // Non-existent field
+        let err = read_compound_field(&raw, &dt, "missing").unwrap_err();
+        assert!(matches!(err, FormatError::PathNotFound(_)));
+    }
+
+    #[test]
+    fn read_enum_values_basic() {
+        use crate::datatype::EnumMember;
+        let dt = Datatype::Enumeration {
+            size: 4,
+            base_type: Box::new(make_i32_le_type()),
+            members: vec![
+                EnumMember { name: "RED".to_string(), value: 0i32.to_le_bytes().to_vec() },
+                EnumMember { name: "GREEN".to_string(), value: 1i32.to_le_bytes().to_vec() },
+                EnumMember { name: "BLUE".to_string(), value: 2i32.to_le_bytes().to_vec() },
+            ],
+        };
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&1i32.to_le_bytes()); // GREEN
+        raw.extend_from_slice(&0i32.to_le_bytes()); // RED
+        raw.extend_from_slice(&2i32.to_le_bytes()); // BLUE
+        raw.extend_from_slice(&99i32.to_le_bytes()); // unknown
+
+        let names = read_enum_names(&raw, &dt).unwrap();
+        assert_eq!(names[0], "GREEN");
+        assert_eq!(names[1], "RED");
+        assert_eq!(names[2], "BLUE");
+        assert!(names[3].starts_with("UNKNOWN("));
+    }
+
+    #[test]
+    fn read_array_flat_basic() {
+        // Array[3] of f64
+        let dt = Datatype::Array {
+            base_type: Box::new(make_f64_le_type()),
+            dimensions: vec![3],
+        };
+        let mut raw = Vec::new();
+        for v in &[1.0f64, 2.0, 3.0] {
+            raw.extend_from_slice(&v.to_le_bytes());
+        }
+        let (data, base_dt, dims) = read_array_flat(&raw, &dt).unwrap();
+        assert_eq!(dims, vec![3]);
+        let vals = read_as_f64(&data, &base_dt).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0, 3.0]);
     }
 }

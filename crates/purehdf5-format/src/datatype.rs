@@ -339,7 +339,7 @@ impl Datatype {
                 let num_members = (bf0 as u16) | ((bf1 as u16) << 8);
                 let mut members = Vec::with_capacity(num_members as usize);
 
-                if version == 3 {
+                if version == 3 || version == 4 {
                     let ob = offset_bytes_for_size(size);
                     for _ in 0..num_members {
                         let (name, name_len) = read_null_terminated_string(data, pos)?;
@@ -417,10 +417,17 @@ impl Datatype {
                 let base_size = base_type.type_size();
                 let mut members = Vec::with_capacity(num_members as usize);
                 // Enum layout: base_type, then all names (null-terminated), then all values
+                // v1/v2: names are padded to 8-byte boundaries
+                // v3: names are just null-terminated
                 let mut member_names = Vec::with_capacity(num_members as usize);
                 for _ in 0..num_members {
                     let (name, name_len) = read_null_terminated_string(data, pos)?;
-                    pos += name_len;
+                    if version < 3 {
+                        let padded = (name_len + 7) & !7;
+                        pos += padded;
+                    } else {
+                        pos += name_len;
+                    }
                     member_names.push(name);
                 }
                 // Now values
@@ -614,8 +621,55 @@ impl Datatype {
                 buf.extend_from_slice(&base_type.serialize());
                 buf
             }
+            Datatype::Compound { size, members } => {
+                let num = members.len() as u16;
+                let bf0 = (num & 0xFF) as u8;
+                let bf1 = ((num >> 8) & 0xFF) as u8;
+                let mut buf = Self::build_header(6, 3, [bf0, bf1, 0], *size);
+                let ob = offset_bytes_for_size(*size);
+                for m in members {
+                    // Null-terminated name
+                    buf.extend_from_slice(m.name.as_bytes());
+                    buf.push(0);
+                    // Byte offset (variable-width)
+                    match ob {
+                        1 => buf.push(m.byte_offset as u8),
+                        2 => buf.extend_from_slice(&(m.byte_offset as u16).to_le_bytes()),
+                        _ => buf.extend_from_slice(&(m.byte_offset as u32).to_le_bytes()),
+                    }
+                    // Recursively serialize member datatype
+                    buf.extend_from_slice(&m.datatype.serialize());
+                }
+                buf
+            }
+            Datatype::Enumeration { size, base_type, members } => {
+                let num = members.len() as u16;
+                let bf0 = (num & 0xFF) as u8;
+                let bf1 = ((num >> 8) & 0xFF) as u8;
+                let mut buf = Self::build_header(8, 3, [bf0, bf1, 0], *size);
+                // Base type
+                buf.extend_from_slice(&base_type.serialize());
+                // All names (null-terminated)
+                for m in members {
+                    buf.extend_from_slice(m.name.as_bytes());
+                    buf.push(0);
+                }
+                // All values
+                for m in members {
+                    buf.extend_from_slice(&m.value);
+                }
+                buf
+            }
+            Datatype::Array { base_type, dimensions } => {
+                let mut buf = Self::build_header(10, 3, [0, 0, 0], self.type_size());
+                buf.push(dimensions.len() as u8);
+                for &d in dimensions {
+                    buf.extend_from_slice(&d.to_le_bytes());
+                }
+                buf.extend_from_slice(&base_type.serialize());
+                buf
+            }
             _ => {
-                // For other types, serialize as opaque — but we only need the above for the write pipeline
                 Vec::new()
             }
         }
@@ -1098,6 +1152,81 @@ mod tests {
         let buf = build_dt_header(7, 1, [5, 0, 0], 8);
         let err = Datatype::parse(&buf).unwrap_err();
         assert_eq!(err, FormatError::InvalidReferenceType(5));
+    }
+
+    #[test]
+    fn serialize_parse_compound_roundtrip() {
+        let dt = Datatype::Compound {
+            size: 20,
+            members: vec![
+                CompoundMember {
+                    name: "x".to_string(),
+                    byte_offset: 0,
+                    datatype: Datatype::FloatingPoint {
+                        size: 8, byte_order: DatatypeByteOrder::LittleEndian,
+                        bit_offset: 0, bit_precision: 64,
+                        exponent_location: 52, exponent_size: 11,
+                        mantissa_location: 0, mantissa_size: 52, exponent_bias: 1023,
+                    },
+                },
+                CompoundMember {
+                    name: "y".to_string(),
+                    byte_offset: 8,
+                    datatype: Datatype::FloatingPoint {
+                        size: 8, byte_order: DatatypeByteOrder::LittleEndian,
+                        bit_offset: 0, bit_precision: 64,
+                        exponent_location: 52, exponent_size: 11,
+                        mantissa_location: 0, mantissa_size: 52, exponent_bias: 1023,
+                    },
+                },
+                CompoundMember {
+                    name: "id".to_string(),
+                    byte_offset: 16,
+                    datatype: Datatype::FixedPoint {
+                        size: 4, byte_order: DatatypeByteOrder::LittleEndian,
+                        signed: true, bit_offset: 0, bit_precision: 32,
+                    },
+                },
+            ],
+        };
+        let bytes = dt.serialize();
+        let (parsed, _) = Datatype::parse(&bytes).unwrap();
+        assert_eq!(parsed, dt);
+    }
+
+    #[test]
+    fn serialize_parse_enum_roundtrip() {
+        let dt = Datatype::Enumeration {
+            size: 4,
+            base_type: Box::new(Datatype::FixedPoint {
+                size: 4, byte_order: DatatypeByteOrder::LittleEndian,
+                signed: true, bit_offset: 0, bit_precision: 32,
+            }),
+            members: vec![
+                EnumMember { name: "RED".to_string(), value: 0i32.to_le_bytes().to_vec() },
+                EnumMember { name: "GREEN".to_string(), value: 1i32.to_le_bytes().to_vec() },
+                EnumMember { name: "BLUE".to_string(), value: 2i32.to_le_bytes().to_vec() },
+            ],
+        };
+        let bytes = dt.serialize();
+        let (parsed, _) = Datatype::parse(&bytes).unwrap();
+        assert_eq!(parsed, dt);
+    }
+
+    #[test]
+    fn serialize_parse_array_roundtrip() {
+        let dt = Datatype::Array {
+            base_type: Box::new(Datatype::FloatingPoint {
+                size: 8, byte_order: DatatypeByteOrder::LittleEndian,
+                bit_offset: 0, bit_precision: 64,
+                exponent_location: 52, exponent_size: 11,
+                mantissa_location: 0, mantissa_size: 52, exponent_bias: 1023,
+            }),
+            dimensions: vec![3],
+        };
+        let bytes = dt.serialize();
+        let (parsed, _) = Datatype::parse(&bytes).unwrap();
+        assert_eq!(parsed, dt);
     }
 
     #[test]
