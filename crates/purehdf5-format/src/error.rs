@@ -26,6 +26,23 @@ pub enum FormatError {
     InvalidObjectHeaderVersion(u8),
     /// Unknown message type that is marked as must-understand.
     UnsupportedMessage(u16),
+    /// Invalid datatype class.
+    InvalidDatatypeClass(u8),
+    /// Invalid datatype version for a given class.
+    InvalidDatatypeVersion {
+        /// The type class.
+        class: u8,
+        /// The version found.
+        version: u8,
+    },
+    /// Invalid string padding type.
+    InvalidStringPadding(u8),
+    /// Invalid character set.
+    InvalidCharacterSet(u8),
+    /// Invalid byte order.
+    InvalidByteOrder(u8),
+    /// Invalid reference type.
+    InvalidReferenceType(u8),
     /// CRC32C checksum mismatch.
     ChecksumMismatch {
         /// The checksum stored in the file.
@@ -67,6 +84,27 @@ impl fmt::Display for FormatError {
                     f,
                     "unsupported message type {id:#06x} marked as must-understand"
                 )
+            }
+            FormatError::InvalidDatatypeClass(c) => {
+                write!(f, "invalid datatype class: {c}")
+            }
+            FormatError::InvalidDatatypeVersion { class, version } => {
+                write!(
+                    f,
+                    "invalid datatype version {version} for class {class}"
+                )
+            }
+            FormatError::InvalidStringPadding(p) => {
+                write!(f, "invalid string padding type: {p}")
+            }
+            FormatError::InvalidCharacterSet(c) => {
+                write!(f, "invalid character set: {c}")
+            }
+            FormatError::InvalidByteOrder(b) => {
+                write!(f, "invalid byte order: {b}")
+            }
+            FormatError::InvalidReferenceType(r) => {
+                write!(f, "invalid reference type: {r}")
             }
             FormatError::ChecksumMismatch { expected, computed } => {
                 write!(
