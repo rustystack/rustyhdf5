@@ -161,6 +161,92 @@ fn bench_roundtrip_chunked_deflate(c: &mut Criterion) {
     });
 }
 
+// ---- Dense attribute benchmarks ----
+
+fn bench_write_dense_attrs(c: &mut Criterion) {
+    use purehdf5_format::file_writer::AttrValue;
+    c.bench_function("write_dataset_20_attrs_dense", |b| {
+        b.iter(|| {
+            let mut fw = FileWriter::new();
+            let ds = fw.create_dataset("data");
+            ds.with_f64_data(&[1.0, 2.0, 3.0]);
+            for i in 0..20 {
+                ds.set_attr(&format!("attr_{i:03}"), AttrValue::F64(i as f64));
+            }
+            fw.finish().unwrap()
+        })
+    });
+}
+
+fn bench_read_dense_attrs(c: &mut Criterion) {
+    use purehdf5_format::file_writer::AttrValue;
+    let mut fw = FileWriter::new();
+    let ds = fw.create_dataset("data");
+    ds.with_f64_data(&[1.0, 2.0, 3.0]);
+    for i in 0..20 {
+        ds.set_attr(&format!("attr_{i:03}"), AttrValue::F64(i as f64));
+    }
+    let bytes = fw.finish().unwrap();
+
+    c.bench_function("read_dataset_20_attrs_dense", |b| {
+        b.iter(|| {
+            let sig = find_signature(&bytes).unwrap();
+            let sb = Superblock::parse(&bytes, sig).unwrap();
+            let addr = resolve_path_any(&bytes, &sb, "data").unwrap();
+            let hdr = ObjectHeader::parse(&bytes, addr as usize, sb.offset_size, sb.length_size).unwrap();
+            purehdf5_format::attribute::extract_attributes_full(&bytes, &hdr, sb.offset_size, sb.length_size).unwrap()
+        })
+    });
+}
+
+// ---- Provenance benchmark ----
+
+fn bench_write_provenance(c: &mut Criterion) {
+    let data = make_data();
+    c.bench_function("write_1M_f64_provenance", |b| {
+        b.iter(|| {
+            let mut fw = FileWriter::new();
+            fw.create_dataset("data")
+                .with_f64_data(&data)
+                .with_shape(&[N as u64])
+                .with_provenance("bench", "2026-02-19T00:00:00Z", None);
+            fw.finish().unwrap()
+        })
+    });
+}
+
+// ---- Checksum benchmark ----
+
+fn bench_jenkins_lookup3(c: &mut Criterion) {
+    let data: Vec<u8> = (0..1_000_000u32).flat_map(|v| v.to_le_bytes()).collect();
+    c.bench_function("jenkins_lookup3_4MB", |b| {
+        b.iter(|| purehdf5_format::checksum::jenkins_lookup3(&data))
+    });
+}
+
+// ---- SHA-256 benchmark ----
+
+fn bench_sha256(c: &mut Criterion) {
+    let data: Vec<u8> = (0..1_000_000u32).flat_map(|v| v.to_le_bytes()).collect();
+    c.bench_function("sha256_4MB", |b| {
+        b.iter(|| purehdf5_format::provenance::sha256_hex(&data))
+    });
+}
+
+// ---- Superblock parse benchmark ----
+
+fn bench_parse_superblock(c: &mut Criterion) {
+    let mut fw = FileWriter::new();
+    fw.create_dataset("data").with_f64_data(&[1.0]);
+    let bytes = fw.finish().unwrap();
+    c.bench_function("parse_superblock", |b| {
+        b.iter(|| {
+            let sig = find_signature(&bytes).unwrap();
+            Superblock::parse(&bytes, sig).unwrap()
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_write_contiguous,
@@ -171,5 +257,11 @@ criterion_group!(
     bench_read_chunked_deflate,
     bench_roundtrip_contiguous,
     bench_roundtrip_chunked_deflate,
+    bench_write_dense_attrs,
+    bench_read_dense_attrs,
+    bench_write_provenance,
+    bench_jenkins_lookup3,
+    bench_sha256,
+    bench_parse_superblock,
 );
 criterion_main!(benches);
