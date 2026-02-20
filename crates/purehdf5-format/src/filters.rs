@@ -140,25 +140,50 @@ fn shuffle_compress(data: &[u8], element_size: usize) -> Result<Vec<u8>, FormatE
 }
 
 /// Compute HDF5 Fletcher32 checksum over data.
-/// HDF5 uses a modified Fletcher32 that operates on 16-bit words (little-endian).
+/// HDF5 uses a modified Fletcher32 that operates on 16-bit words.
+///
+/// Optimized with wider accumulators: processes blocks of 360 words before
+/// taking the modulo, reducing the number of expensive modulo operations.
+/// (360 is the maximum block size that avoids u32 overflow for sum2.)
 fn fletcher32_compute(data: &[u8]) -> u32 {
     let mut sum1: u32 = 0;
     let mut sum2: u32 = 0;
 
-    let mut i = 0;
-    while i < data.len() {
-        let val = if i + 1 < data.len() {
-            // Read as a 16-bit little-endian value, but HDF5 fletcher32 pairs bytes
-            // in a platform-specific way. The HDF5 spec pairs consecutive bytes as
-            // big-endian 16-bit values for the checksum computation.
-            ((data[i] as u32) << 8) | (data[i + 1] as u32)
+    // Process in blocks of 360 16-bit words (720 bytes) to delay modulo.
+    // Max sum1 before mod: 360 * 65535 = 23_592_600 < u32::MAX
+    // Max sum2 before mod: 360 * 23_592_600 ~ 8.5B > u32::MAX, but actual
+    // sum2 accumulates incrementally, so worst case is 360*360*65535/2 which
+    // fits in u64. We use u32 with block size 360 which is safe.
+    const BLOCK_WORDS: usize = 360;
+    const BLOCK_BYTES: usize = BLOCK_WORDS * 2;
+
+    let mut offset = 0;
+    let len = data.len();
+
+    while offset + BLOCK_BYTES <= len {
+        let end = offset + BLOCK_BYTES;
+        let mut i = offset;
+        while i < end {
+            let val = ((data[i] as u32) << 8) | (data[i + 1] as u32);
+            sum1 += val;
+            sum2 += sum1;
+            i += 2;
+        }
+        sum1 %= 65535;
+        sum2 %= 65535;
+        offset = end;
+    }
+
+    // Handle remaining bytes
+    while offset < len {
+        let val = if offset + 1 < len {
+            ((data[offset] as u32) << 8) | (data[offset + 1] as u32)
         } else {
-            // Odd byte at end
-            (data[i] as u32) << 8
+            (data[offset] as u32) << 8
         };
         sum1 = (sum1 + val) % 65535;
         sum2 = (sum2 + sum1) % 65535;
-        i += 2;
+        offset += 2;
     }
 
     (sum2 << 16) | sum1

@@ -1,4 +1,9 @@
-//! Reading API: File, Dataset, and Group handles for reading HDF5 files.
+//! Memory-mapped HDF5 file reader.
+//!
+//! [`MmapFile`] provides the same API as [`crate::File`] but uses memory-mapped
+//! I/O instead of reading the entire file into a `Vec<u8>`.  For contiguous
+//! datasets the read path is **zero-copy** — callers receive a slice directly
+//! into the mmap region.
 
 use std::collections::HashMap;
 
@@ -17,77 +22,60 @@ use purehdf5_format::signature;
 use purehdf5_format::superblock::Superblock;
 use purehdf5_format::symbol_table::SymbolTableMessage;
 
+use purehdf5_io::MmapReader;
+
 use crate::error::Error;
 use crate::types::{attrs_to_map, classify_datatype, AttrValue, DType};
 
-/// An open HDF5 file for reading.
+/// An HDF5 file opened via memory mapping.
 ///
-/// Holds the entire file in memory as `Vec<u8>` plus the parsed superblock.
-pub struct File {
-    data: Vec<u8>,
+/// Uses `MmapReader` under the hood so every access is a zero-copy view into
+/// the kernel page cache.  For contiguous datasets you can obtain a direct
+/// `&[u8]` slice via [`MmapDataset::read_raw_slice`].
+pub struct MmapFile {
+    reader: MmapReader,
     superblock: Superblock,
 }
 
-impl File {
-    /// Open an HDF5 file from a filesystem path.
-    pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
-        let data = std::fs::read(path.as_ref()).map_err(Error::Io)?;
-        Self::from_bytes(data)
-    }
-
+impl MmapFile {
     /// Open an HDF5 file using memory-mapped I/O.
-    ///
-    /// This is a convenience constructor that returns an [`crate::MmapFile`].
-    #[cfg(feature = "mmap")]
-    pub fn open_mmap<P: AsRef<std::path::Path>>(path: P) -> Result<crate::MmapFile, Error> {
-        crate::MmapFile::open(path)
-    }
-
-    /// Open an HDF5 file from an in-memory byte vector.
-    pub fn from_bytes(data: Vec<u8>) -> Result<Self, Error> {
-        let sig_offset = signature::find_signature(&data)?;
-        let superblock = Superblock::parse(&data, sig_offset)?;
-        Ok(Self { data, superblock })
+    pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
+        let reader = MmapReader::open(path).map_err(Error::Io)?;
+        let data = reader.as_bytes();
+        let sig_offset = signature::find_signature(data)?;
+        let superblock = Superblock::parse(data, sig_offset)?;
+        Ok(Self { reader, superblock })
     }
 
     /// Returns a handle to the root group.
-    pub fn root(&self) -> Group<'_> {
-        Group {
+    pub fn root(&self) -> MmapGroup<'_> {
+        MmapGroup {
             file: self,
             address: self.superblock.root_group_address,
         }
     }
 
-    /// Resolve a path and return a `Dataset` handle.
-    ///
-    /// The path uses `/` separators (e.g., `"group1/values"`).
-    pub fn dataset(&self, path: &str) -> Result<Dataset<'_>, Error> {
-        let addr = group_v2::resolve_path_any(&self.data, &self.superblock, path)?;
+    /// Resolve a path and return a `MmapDataset` handle.
+    pub fn dataset(&self, path: &str) -> Result<MmapDataset<'_>, Error> {
+        let data = self.reader.as_bytes();
+        let addr = group_v2::resolve_path_any(data, &self.superblock, path)?;
         let hdr = self.parse_header(addr)?;
         if !has_message(&hdr, MessageType::DataLayout) {
             return Err(Error::NotADataset(path.to_string()));
         }
-        Ok(Dataset {
-            file: self,
-            header: hdr,
-        })
+        Ok(MmapDataset { file: self, header: hdr })
     }
 
-    /// Resolve a path and return a `Group` handle.
-    ///
-    /// The path uses `/` separators (e.g., `"sensors"`).
-    /// Use `"/"` or `""` for the root group.
-    pub fn group(&self, path: &str) -> Result<Group<'_>, Error> {
-        let addr = group_v2::resolve_path_any(&self.data, &self.superblock, path)?;
-        Ok(Group {
-            file: self,
-            address: addr,
-        })
+    /// Resolve a path and return a `MmapGroup` handle.
+    pub fn group(&self, path: &str) -> Result<MmapGroup<'_>, Error> {
+        let data = self.reader.as_bytes();
+        let addr = group_v2::resolve_path_any(data, &self.superblock, path)?;
+        Ok(MmapGroup { file: self, address: addr })
     }
 
-    /// Returns the raw file bytes.
+    /// Returns the raw file bytes (zero-copy from mmap).
     pub fn as_bytes(&self) -> &[u8] {
-        &self.data
+        self.reader.as_bytes()
     }
 
     /// Returns a reference to the parsed superblock.
@@ -97,7 +85,7 @@ impl File {
 
     fn parse_header(&self, address: u64) -> Result<ObjectHeader, FormatError> {
         ObjectHeader::parse(
-            &self.data,
+            self.reader.as_bytes(),
             address as usize,
             self.superblock.offset_size,
             self.superblock.length_size,
@@ -113,10 +101,10 @@ impl File {
     }
 }
 
-impl std::fmt::Debug for File {
+impl std::fmt::Debug for MmapFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("File")
-            .field("size", &self.data.len())
+        f.debug_struct("MmapFile")
+            .field("size", &self.reader.len())
             .field("superblock_version", &self.superblock.version)
             .finish()
     }
@@ -126,13 +114,13 @@ impl std::fmt::Debug for File {
 // Group handle
 // ---------------------------------------------------------------------------
 
-/// A lightweight handle to an HDF5 group.
-pub struct Group<'f> {
-    file: &'f File,
+/// A lightweight handle to an HDF5 group inside an [`MmapFile`].
+pub struct MmapGroup<'f> {
+    file: &'f MmapFile,
     address: u64,
 }
 
-impl<'f> Group<'f> {
+impl<'f> MmapGroup<'f> {
     /// List the names of datasets in this group.
     pub fn datasets(&self) -> Result<Vec<String>, Error> {
         let entries = self.children()?;
@@ -161,23 +149,24 @@ impl<'f> Group<'f> {
 
     /// Read all attributes of this group.
     pub fn attrs(&self) -> Result<HashMap<String, AttrValue>, Error> {
+        let data = self.file.reader.as_bytes();
         let hdr = self.file.parse_header(self.address)?;
         let attr_msgs = extract_attributes_full(
-            &self.file.data,
+            data,
             &hdr,
             self.file.offset_size(),
             self.file.length_size(),
         )?;
         Ok(attrs_to_map(
             &attr_msgs,
-            &self.file.data,
+            data,
             self.file.offset_size(),
             self.file.length_size(),
         ))
     }
 
     /// Get a dataset within this group by name.
-    pub fn dataset(&self, name: &str) -> Result<Dataset<'f>, Error> {
+    pub fn dataset(&self, name: &str) -> Result<MmapDataset<'f>, Error> {
         let entries = self.children()?;
         let entry = entries
             .iter()
@@ -187,30 +176,28 @@ impl<'f> Group<'f> {
         if !has_message(&hdr, MessageType::DataLayout) {
             return Err(Error::NotADataset(name.to_string()));
         }
-        Ok(Dataset {
-            file: self.file,
-            header: hdr,
-        })
+        Ok(MmapDataset { file: self.file, header: hdr })
     }
 
     /// Get a subgroup within this group by name.
-    pub fn group(&self, name: &str) -> Result<Group<'f>, Error> {
+    pub fn group(&self, name: &str) -> Result<MmapGroup<'f>, Error> {
         let entries = self.children()?;
         let entry = entries
             .iter()
             .find(|e| e.name == name)
             .ok_or_else(|| Error::Format(FormatError::PathNotFound(name.to_string())))?;
-        Ok(Group {
+        Ok(MmapGroup {
             file: self.file,
             address: entry.object_header_address,
         })
     }
 
     fn children(&self) -> Result<Vec<GroupEntry>, Error> {
+        let data = self.file.reader.as_bytes();
         let hdr = self.file.parse_header(self.address)?;
         let os = self.file.offset_size();
         let ls = self.file.length_size();
-        resolve_group_entries(&self.file.data, &hdr, os, ls).map_err(Error::Format)
+        resolve_group_entries(data, &hdr, os, ls).map_err(Error::Format)
     }
 }
 
@@ -218,14 +205,14 @@ impl<'f> Group<'f> {
 // Dataset handle
 // ---------------------------------------------------------------------------
 
-/// A lightweight handle to an HDF5 dataset.
+/// A lightweight handle to an HDF5 dataset inside an [`MmapFile`].
 #[derive(Debug)]
-pub struct Dataset<'f> {
-    file: &'f File,
+pub struct MmapDataset<'f> {
+    file: &'f MmapFile,
     header: ObjectHeader,
 }
 
-impl<'f> Dataset<'f> {
+impl<'f> MmapDataset<'f> {
     /// Returns the shape (dimensions) of the dataset.
     pub fn shape(&self) -> Result<Vec<u64>, Error> {
         let ds = self.dataspace()?;
@@ -280,17 +267,50 @@ impl<'f> Dataset<'f> {
         Ok(data_read::read_as_strings(&raw, &dt)?)
     }
 
+    /// For contiguous datasets, return a zero-copy slice into the mmap.
+    ///
+    /// Returns `None` if the dataset is not contiguous (compact or chunked).
+    pub fn read_raw_slice(&self) -> Result<Option<&'f [u8]>, Error> {
+        let dl = self.data_layout()?;
+        let ds = self.dataspace()?;
+        let dt = self.datatype()?;
+        let expected = ds.num_elements() as usize * dt.type_size() as usize;
+        match &dl {
+            DataLayout::Contiguous { address, size } => {
+                let addr = address.ok_or(Error::Format(FormatError::NoDataAllocated))?;
+                let sz = *size as usize;
+                if sz != expected {
+                    return Err(Error::Format(FormatError::DataSizeMismatch {
+                        expected,
+                        actual: sz,
+                    }));
+                }
+                let data = self.file.reader.as_bytes();
+                let a = addr as usize;
+                if a + sz > data.len() {
+                    return Err(Error::Format(FormatError::UnexpectedEof {
+                        expected: a + sz,
+                        available: data.len(),
+                    }));
+                }
+                Ok(Some(&data[a..a + sz]))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Read all attributes of this dataset.
     pub fn attrs(&self) -> Result<HashMap<String, AttrValue>, Error> {
+        let data = self.file.reader.as_bytes();
         let attr_msgs = extract_attributes_full(
-            &self.file.data,
+            data,
             &self.header,
             self.file.offset_size(),
             self.file.length_size(),
         )?;
         Ok(attrs_to_map(
             &attr_msgs,
-            &self.file.data,
+            data,
             self.file.offset_size(),
             self.file.length_size(),
         ))
@@ -330,7 +350,7 @@ impl<'f> Dataset<'f> {
         let dl = self.data_layout()?;
         let pipeline = self.filter_pipeline();
         Ok(data_read::read_raw_data_full(
-            &self.file.data,
+            self.file.reader.as_bytes(),
             &dl,
             &ds,
             &dt,
@@ -342,7 +362,7 @@ impl<'f> Dataset<'f> {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers (same as reader.rs)
 // ---------------------------------------------------------------------------
 
 fn find_message(
@@ -395,7 +415,6 @@ fn resolve_group_entries(
     } else if is_v2 {
         group_v2::resolve_v2_group_entries(file_data, object_header, offset_size, length_size)
     } else {
-        // Empty group or unrecognized — return empty
         Ok(Vec::new())
     }
 }
