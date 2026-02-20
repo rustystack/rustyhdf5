@@ -42,3 +42,6 @@ pub mod signature;
 pub mod superblock;
 pub mod symbol_table;
 pub mod vl_data;
+
+#[cfg(feature = "provenance")]
+pub mod provenance;

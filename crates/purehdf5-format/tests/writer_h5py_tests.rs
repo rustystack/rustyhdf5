@@ -559,3 +559,109 @@ print(json.dumps({{'num_attrs': len(attrs), 'first': attrs.get('attr_000'), 'las
     assert_eq!(v["first"], serde_json::json!(0.0));
     assert_eq!(v["last"], serde_json::json!(73.5));
 }
+
+// ---- SHINES provenance h5py round-trips ----
+
+#[test]
+fn h5py_reads_provenance_attrs() {
+    let mut fw = FileWriter::new();
+    let ds = fw.create_dataset("sensor");
+    ds.with_f64_data(&[1.0, 2.0, 3.0, 4.0])
+        .with_provenance("purehdf5-rs/test", "2026-02-19T12:00:00Z", Some("bench_42"));
+    let bytes = fw.finish().unwrap();
+    let path = std::env::temp_dir().join("purehdf5_provenance.h5");
+    std::fs::write(&path, &bytes).unwrap();
+
+    let script = format!(
+        r#"
+import h5py, json, hashlib, struct
+f = h5py.File('{}', 'r')
+d = f['sensor']
+data = d[:].tolist()
+sha = d.attrs['_provenance_sha256']
+if isinstance(sha, bytes):
+    sha = sha.decode('utf-8')
+sha = sha.rstrip('\x00')
+creator = d.attrs['_provenance_creator']
+if isinstance(creator, bytes):
+    creator = creator.decode('utf-8')
+creator = creator.rstrip('\x00')
+ts = d.attrs['_provenance_timestamp']
+if isinstance(ts, bytes):
+    ts = ts.decode('utf-8')
+ts = ts.rstrip('\x00')
+source = d.attrs['_provenance_source']
+if isinstance(source, bytes):
+    source = source.decode('utf-8')
+source = source.rstrip('\x00')
+# Verify SHA-256 matches the raw little-endian f64 bytes
+raw = struct.pack('<4d', *data)
+expected = hashlib.sha256(raw).hexdigest()
+f.close()
+print(json.dumps({{'data': data, 'sha256': sha, 'expected_sha256': expected, 'creator': creator, 'timestamp': ts, 'source': source}}))
+"#,
+        path.display()
+    );
+    let stdout = h5py_read(&path, &script);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["data"], serde_json::json!([1.0, 2.0, 3.0, 4.0]));
+    assert_eq!(v["sha256"], v["expected_sha256"]);
+    assert_eq!(v["creator"], serde_json::json!("purehdf5-rs/test"));
+    assert_eq!(v["timestamp"], serde_json::json!("2026-02-19T12:00:00Z"));
+    assert_eq!(v["source"], serde_json::json!("bench_42"));
+}
+
+#[test]
+fn h5py_reads_provenance_no_source() {
+    let mut fw = FileWriter::new();
+    let ds = fw.create_dataset("data");
+    ds.with_i32_data(&[10, 20, 30])
+        .with_provenance("test-writer", "2026-01-01T00:00:00Z", None);
+    let bytes = fw.finish().unwrap();
+    let path = std::env::temp_dir().join("purehdf5_provenance_nosrc.h5");
+    std::fs::write(&path, &bytes).unwrap();
+
+    let script = format!(
+        r#"
+import h5py, json, hashlib, struct
+f = h5py.File('{}', 'r')
+d = f['data']
+attr_names = sorted(d.attrs.keys())
+sha = d.attrs['_provenance_sha256']
+if isinstance(sha, bytes):
+    sha = sha.decode('utf-8')
+sha = sha.rstrip('\x00')
+raw = struct.pack('<3i', *d[:].tolist())
+expected = hashlib.sha256(raw).hexdigest()
+has_source = '_provenance_source' in d.attrs
+f.close()
+print(json.dumps({{'attrs': attr_names, 'sha_ok': sha == expected, 'has_source': has_source}}))
+"#,
+        path.display()
+    );
+    let stdout = h5py_read(&path, &script);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["sha_ok"], serde_json::json!(true));
+    assert_eq!(v["has_source"], serde_json::json!(false));
+}
+
+#[test]
+fn provenance_verify_written_file() {
+    let mut fw = FileWriter::new();
+    let ds = fw.create_dataset("values");
+    ds.with_f64_data(&[100.0, 200.0, 300.0])
+        .with_provenance("integrity-test", "2026-02-19T00:00:00Z", None);
+    let bytes = fw.finish().unwrap();
+
+    // Use our verification API to check integrity
+    let sig = purehdf5_format::signature::find_signature(&bytes).unwrap();
+    let sb = purehdf5_format::superblock::Superblock::parse(&bytes, sig).unwrap();
+    let addr = purehdf5_format::group_v2::resolve_path_any(&bytes, &sb, "values").unwrap();
+    let hdr = purehdf5_format::object_header::ObjectHeader::parse(
+        &bytes, addr as usize, sb.offset_size, sb.length_size,
+    ).unwrap();
+    let result = purehdf5_format::provenance::verify_dataset(
+        &bytes, &hdr, sb.offset_size, sb.length_size,
+    ).unwrap();
+    assert_eq!(result, purehdf5_format::provenance::VerifyResult::Ok);
+}

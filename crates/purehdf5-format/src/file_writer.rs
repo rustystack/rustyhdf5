@@ -17,6 +17,8 @@ use crate::type_builders::{
 
 // Re-export public types that moved to type_builders for API compatibility.
 pub use crate::type_builders::{AttrValue, CompoundTypeBuilder, EnumTypeBuilder};
+#[cfg(feature = "provenance")]
+pub use crate::type_builders::ProvenanceConfig;
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
@@ -409,6 +411,15 @@ impl FileWriter {
             };
             let mut attrs = Vec::new();
             for (n, v) in &db.attrs { attrs.push(build_attr_message(n, v)); }
+            #[cfg(feature = "provenance")]
+            if let Some(ref prov) = db.provenance {
+                let p = crate::provenance::Provenance {
+                    creator: prov.creator.clone(),
+                    timestamp: prov.timestamp.clone(),
+                    source: prov.source.clone(),
+                };
+                attrs.extend(p.build_attrs(&raw));
+            }
             root_ds_indices.push(all_ds.len());
             all_ds.push(DsFlat { name: db.name, dt, ds: dspace, raw, attrs, chunk_options: db.chunk_options, maxshape: db.maxshape });
         }
@@ -428,6 +439,15 @@ impl FileWriter {
                 };
                 let mut attrs = Vec::new();
                 for (n, v) in &db.attrs { attrs.push(build_attr_message(n, v)); }
+                #[cfg(feature = "provenance")]
+                if let Some(ref prov) = db.provenance {
+                    let p = crate::provenance::Provenance {
+                        creator: prov.creator.clone(),
+                        timestamp: prov.timestamp.clone(),
+                        source: prov.source.clone(),
+                    };
+                    attrs.extend(p.build_attrs(&raw));
+                }
                 ds_idx.push(all_ds.len());
                 all_ds.push(DsFlat { name: db.name, dt, ds: dspace, raw, attrs, chunk_options: db.chunk_options, maxshape: db.maxshape });
             }

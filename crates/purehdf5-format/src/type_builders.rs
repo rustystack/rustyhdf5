@@ -314,6 +314,15 @@ pub enum AttrValue {
 
 // ---- Dataset builder ----
 
+/// Configuration for SHINES provenance metadata.
+#[cfg(feature = "provenance")]
+#[derive(Debug, Clone)]
+pub struct ProvenanceConfig {
+    pub creator: String,
+    pub timestamp: String,
+    pub source: Option<String>,
+}
+
 /// Builder for datasets.
 pub struct DatasetBuilder {
     pub(crate) name: String,
@@ -323,6 +332,8 @@ pub struct DatasetBuilder {
     pub(crate) data: Option<Vec<u8>>,
     pub(crate) attrs: Vec<(String, AttrValue)>,
     pub(crate) chunk_options: ChunkOptions,
+    #[cfg(feature = "provenance")]
+    pub(crate) provenance: Option<ProvenanceConfig>,
 }
 
 impl DatasetBuilder {
@@ -335,6 +346,8 @@ impl DatasetBuilder {
             data: None,
             attrs: Vec::new(),
             chunk_options: ChunkOptions::default(),
+            #[cfg(feature = "provenance")]
+            provenance: None,
         }
     }
 
@@ -495,6 +508,25 @@ impl DatasetBuilder {
     /// Enable fletcher32 checksum.
     pub fn with_fletcher32(&mut self) -> &mut Self {
         self.chunk_options.fletcher32 = true;
+        self
+    }
+
+    /// Attach SHINES provenance metadata (SHA-256, creator, timestamp).
+    ///
+    /// The SHA-256 hash of the raw dataset bytes is computed automatically
+    /// during file serialization and stored as `_provenance_sha256`.
+    #[cfg(feature = "provenance")]
+    pub fn with_provenance(
+        &mut self,
+        creator: &str,
+        timestamp: &str,
+        source: Option<&str>,
+    ) -> &mut Self {
+        self.provenance = Some(ProvenanceConfig {
+            creator: creator.to_string(),
+            timestamp: timestamp.to_string(),
+            source: source.map(|s| s.to_string()),
+        });
         self
     }
 }
