@@ -10,3 +10,8 @@ categories = ["development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

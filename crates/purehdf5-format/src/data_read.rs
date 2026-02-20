@@ -462,6 +462,143 @@ pub fn read_enum_names(raw: &[u8], datatype: &Datatype) -> Result<Vec<String>, F
     Ok(values.into_iter().map(|v| v.name).collect())
 }
 
+// --- Reference type reading ---
+
+/// A resolved object reference: the file address of the referenced object header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectReference {
+    /// The file address of the referenced object header.
+    /// A value of `u64::MAX` (all 0xFF bytes) indicates a null reference.
+    pub address: u64,
+}
+
+impl ObjectReference {
+    /// Returns `true` if this is a null (unset) reference.
+    pub fn is_null(&self) -> bool {
+        self.address == u64::MAX
+    }
+}
+
+/// A region reference: raw bytes that encode a dataset selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionReference {
+    /// The raw region reference bytes. A region reference is typically 12 bytes
+    /// (object address + dataspace selection) but the exact layout depends on
+    /// the file's offset size and the selection type.
+    pub raw: Vec<u8>,
+}
+
+/// Read object references from raw bytes.
+///
+/// Object references are stored as `offset_size`-byte file addresses pointing
+/// to the object header of the referenced object. A reference consisting of
+/// all `0xFF` bytes is a null (unset) reference.
+///
+/// # Arguments
+/// * `raw` — raw bytes read from the dataset
+/// * `datatype` — must be `Datatype::Reference` with `ReferenceType::Object`
+/// * `offset_size` — the file's offset size (from superblock), typically 8
+pub fn read_object_references(
+    raw: &[u8],
+    datatype: &Datatype,
+    offset_size: u8,
+) -> Result<Vec<ObjectReference>, FormatError> {
+    match datatype {
+        Datatype::Reference {
+            ref_type: crate::datatype::ReferenceType::Object,
+            size,
+        } => {
+            let elem_size = *size as usize;
+            if elem_size == 0 {
+                return Ok(Vec::new());
+            }
+            if !raw.len().is_multiple_of(elem_size) {
+                return Err(FormatError::DataSizeMismatch {
+                    expected: 0,
+                    actual: raw.len(),
+                });
+            }
+            let count = raw.len() / elem_size;
+            let mut result = Vec::with_capacity(count);
+            let read_size = (offset_size as usize).min(elem_size);
+            for i in 0..count {
+                let chunk = &raw[i * elem_size..(i + 1) * elem_size];
+                let address = read_ref_address(chunk, read_size);
+                result.push(ObjectReference { address });
+            }
+            Ok(result)
+        }
+        _ => Err(FormatError::TypeMismatch {
+            expected: "Reference(Object)",
+            actual: datatype_name(datatype),
+        }),
+    }
+}
+
+/// Read region references from raw bytes.
+///
+/// Region references encode a dataset selection (hyperslab, point list, etc.)
+/// along with the address of the target dataset. This function returns the
+/// raw bytes for each reference without decoding the selection, since the
+/// full region reference format is complex and depends on the selection type.
+///
+/// # Arguments
+/// * `raw` — raw bytes read from the dataset
+/// * `datatype` — must be `Datatype::Reference` with `ReferenceType::DatasetRegion`
+pub fn read_region_references(
+    raw: &[u8],
+    datatype: &Datatype,
+) -> Result<Vec<RegionReference>, FormatError> {
+    match datatype {
+        Datatype::Reference {
+            ref_type: crate::datatype::ReferenceType::DatasetRegion,
+            size,
+        } => {
+            let elem_size = *size as usize;
+            if elem_size == 0 {
+                return Ok(Vec::new());
+            }
+            if !raw.len().is_multiple_of(elem_size) {
+                return Err(FormatError::DataSizeMismatch {
+                    expected: 0,
+                    actual: raw.len(),
+                });
+            }
+            let count = raw.len() / elem_size;
+            let mut result = Vec::with_capacity(count);
+            for i in 0..count {
+                let chunk = &raw[i * elem_size..(i + 1) * elem_size];
+                result.push(RegionReference {
+                    raw: chunk.to_vec(),
+                });
+            }
+            Ok(result)
+        }
+        _ => Err(FormatError::TypeMismatch {
+            expected: "Reference(DatasetRegion)",
+            actual: datatype_name(datatype),
+        }),
+    }
+}
+
+/// Read a file address from reference bytes (little-endian).
+fn read_ref_address(bytes: &[u8], size: usize) -> u64 {
+    let mut buf = [0xFFu8; 8];
+    let len = size.min(bytes.len()).min(8);
+    buf[..len].copy_from_slice(&bytes[..len]);
+    // If we read fewer than 8 bytes, check if ALL read bytes are 0xFF (null ref)
+    if len < 8 && bytes[..len].iter().all(|&b| b == 0xFF) {
+        return u64::MAX;
+    }
+    // Zero-extend upper bytes for non-null refs
+    if len < 8 && !bytes[..len].iter().all(|&b| b == 0xFF) {
+        for b in buf[len..].iter_mut() {
+            *b = 0;
+        }
+    }
+    u64::from_le_bytes(buf)
+}
+
 // --- Array type reading ---
 
 /// Read array-typed dataset elements, returning the raw base-type data.
@@ -905,5 +1042,73 @@ mod tests {
         assert_eq!(dims, vec![3]);
         let vals = read_as_f64(&data, &base_dt).unwrap();
         assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn read_object_references_basic() {
+        use crate::datatype::ReferenceType;
+        let dt = Datatype::Reference {
+            size: 8,
+            ref_type: ReferenceType::Object,
+        };
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&1024u64.to_le_bytes()); // valid ref
+        raw.extend_from_slice(&u64::MAX.to_le_bytes()); // null ref
+        raw.extend_from_slice(&2048u64.to_le_bytes()); // valid ref
+
+        let refs = read_object_references(&raw, &dt, 8).unwrap();
+        assert_eq!(refs.len(), 3);
+        assert_eq!(refs[0].address, 1024);
+        assert!(!refs[0].is_null());
+        assert!(refs[1].is_null());
+        assert_eq!(refs[2].address, 2048);
+    }
+
+    #[test]
+    fn read_object_references_4byte_offset() {
+        use crate::datatype::ReferenceType;
+        let dt = Datatype::Reference {
+            size: 4,
+            ref_type: ReferenceType::Object,
+        };
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&512u32.to_le_bytes());
+        raw.extend_from_slice(&u32::MAX.to_le_bytes()); // null ref
+
+        let refs = read_object_references(&raw, &dt, 4).unwrap();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].address, 512);
+        assert!(refs[1].is_null());
+    }
+
+    #[test]
+    fn read_object_references_type_mismatch() {
+        let dt = make_f64_le_type();
+        let raw = vec![0u8; 8];
+        let err = read_object_references(&raw, &dt, 8).unwrap_err();
+        assert!(matches!(err, FormatError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn read_region_references_basic() {
+        use crate::datatype::ReferenceType;
+        let dt = Datatype::Reference {
+            size: 12,
+            ref_type: ReferenceType::DatasetRegion,
+        };
+        let raw = vec![0xABu8; 24]; // two 12-byte region refs
+
+        let refs = read_region_references(&raw, &dt).unwrap();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].raw.len(), 12);
+        assert_eq!(refs[1].raw.len(), 12);
+    }
+
+    #[test]
+    fn read_region_references_type_mismatch() {
+        let dt = make_i32_le_type();
+        let raw = vec![0u8; 12];
+        let err = read_region_references(&raw, &dt).unwrap_err();
+        assert!(matches!(err, FormatError::TypeMismatch { .. }));
     }
 }
