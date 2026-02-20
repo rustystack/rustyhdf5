@@ -1,0 +1,13 @@
+[package]
+name = "purehdf5-netcdf4"
+version = "0.1.0"
+edition = "2021"
+description = "NetCDF-4 read support built on purehdf5 — pure Rust, no C dependencies"
+license = "MIT"
+repository = "https://github.com/nicosalm/purehdf5-rs"
+keywords = ["netcdf", "netcdf4", "hdf5", "science", "climate"]
+categories = ["parser-implementations", "science"]
+
+[dependencies]
+purehdf5 = { path = "../purehdf5" }
+purehdf5-format = { path = "../purehdf5-format" }
