@@ -1,4 +1,9 @@
 //! Reading API: File, Dataset, and Group handles for reading HDF5 files.
+//!
+//! When the `mmap` feature is enabled (default), [`File::open`] uses
+//! memory-mapped I/O for zero-copy access.  [`File::open_buffered`] provides
+//! the traditional read-into-`Vec<u8>` fallback.  [`File::from_bytes`] remains
+//! available for in-memory usage (tests, etc.).
 
 use std::collections::HashMap;
 
@@ -20,34 +25,87 @@ use purehdf5_format::symbol_table::SymbolTableMessage;
 use crate::error::Error;
 use crate::types::{attrs_to_map, classify_datatype, AttrValue, DType};
 
+// ---------------------------------------------------------------------------
+// FileData — internal storage for either owned bytes or an mmap
+// ---------------------------------------------------------------------------
+
+/// Internal storage: either an owned `Vec<u8>` or a memory-mapped region.
+enum FileData {
+    Owned(Vec<u8>),
+    #[cfg(feature = "mmap")]
+    Mmap(purehdf5_io::MmapReader),
+}
+
+impl FileData {
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            FileData::Owned(v) => v,
+            #[cfg(feature = "mmap")]
+            FileData::Mmap(r) => r.as_bytes(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.as_bytes().len()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// File
+// ---------------------------------------------------------------------------
+
 /// An open HDF5 file for reading.
 ///
-/// Holds the entire file in memory as `Vec<u8>` plus the parsed superblock.
+/// When the `mmap` feature is enabled (the default), [`File::open`] uses
+/// memory-mapped I/O so the OS page-cache serves reads with zero copies.
+/// Use [`File::open_buffered`] to get the old read-into-`Vec<u8>` behaviour,
+/// or [`File::from_bytes`] for fully in-memory operation.
 pub struct File {
-    data: Vec<u8>,
+    data: FileData,
     superblock: Superblock,
 }
 
 impl File {
     /// Open an HDF5 file from a filesystem path.
+    ///
+    /// When the `mmap` feature is enabled (default), this uses memory-mapped
+    /// I/O.  Otherwise it reads the entire file into a `Vec<u8>`.
     pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
-        let data = std::fs::read(path.as_ref()).map_err(Error::Io)?;
-        Self::from_bytes(data)
+        #[cfg(feature = "mmap")]
+        {
+            let reader = purehdf5_io::MmapReader::open(path).map_err(Error::Io)?;
+            let data_ref = reader.as_bytes();
+            let sig_offset = signature::find_signature(data_ref)?;
+            let superblock = Superblock::parse(data_ref, sig_offset)?;
+            Ok(Self {
+                data: FileData::Mmap(reader),
+                superblock,
+            })
+        }
+        #[cfg(not(feature = "mmap"))]
+        {
+            let bytes = std::fs::read(path.as_ref()).map_err(Error::Io)?;
+            Self::from_bytes(bytes)
+        }
     }
 
-    /// Open an HDF5 file using memory-mapped I/O.
+    /// Open an HDF5 file by reading it entirely into memory.
     ///
-    /// This is a convenience constructor that returns an [`crate::MmapFile`].
-    #[cfg(feature = "mmap")]
-    pub fn open_mmap<P: AsRef<std::path::Path>>(path: P) -> Result<crate::MmapFile, Error> {
-        crate::MmapFile::open(path)
+    /// This is the pre-mmap behaviour and is useful when memory-mapping is
+    /// undesirable (e.g. network filesystems, very small files, etc.).
+    pub fn open_buffered<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
+        let bytes = std::fs::read(path.as_ref()).map_err(Error::Io)?;
+        Self::from_bytes(bytes)
     }
 
     /// Open an HDF5 file from an in-memory byte vector.
     pub fn from_bytes(data: Vec<u8>) -> Result<Self, Error> {
         let sig_offset = signature::find_signature(&data)?;
         let superblock = Superblock::parse(&data, sig_offset)?;
-        Ok(Self { data, superblock })
+        Ok(Self {
+            data: FileData::Owned(data),
+            superblock,
+        })
     }
 
     /// Returns a handle to the root group.
@@ -62,7 +120,8 @@ impl File {
     ///
     /// The path uses `/` separators (e.g., `"group1/values"`).
     pub fn dataset(&self, path: &str) -> Result<Dataset<'_>, Error> {
-        let addr = group_v2::resolve_path_any(&self.data, &self.superblock, path)?;
+        let data = self.data.as_bytes();
+        let addr = group_v2::resolve_path_any(data, &self.superblock, path)?;
         let hdr = self.parse_header(addr)?;
         if !has_message(&hdr, MessageType::DataLayout) {
             return Err(Error::NotADataset(path.to_string()));
@@ -78,7 +137,8 @@ impl File {
     /// The path uses `/` separators (e.g., `"sensors"`).
     /// Use `"/"` or `""` for the root group.
     pub fn group(&self, path: &str) -> Result<Group<'_>, Error> {
-        let addr = group_v2::resolve_path_any(&self.data, &self.superblock, path)?;
+        let data = self.data.as_bytes();
+        let addr = group_v2::resolve_path_any(data, &self.superblock, path)?;
         Ok(Group {
             file: self,
             address: addr,
@@ -87,7 +147,7 @@ impl File {
 
     /// Returns the raw file bytes.
     pub fn as_bytes(&self) -> &[u8] {
-        &self.data
+        self.data.as_bytes()
     }
 
     /// Returns a reference to the parsed superblock.
@@ -95,9 +155,18 @@ impl File {
         &self.superblock
     }
 
+    /// Returns `true` when the file is backed by memory-mapped I/O.
+    pub fn is_mmap(&self) -> bool {
+        match &self.data {
+            FileData::Owned(_) => false,
+            #[cfg(feature = "mmap")]
+            FileData::Mmap(_) => true,
+        }
+    }
+
     fn parse_header(&self, address: u64) -> Result<ObjectHeader, FormatError> {
         ObjectHeader::parse(
-            &self.data,
+            self.data.as_bytes(),
             address as usize,
             self.superblock.offset_size,
             self.superblock.length_size,
@@ -118,6 +187,7 @@ impl std::fmt::Debug for File {
         f.debug_struct("File")
             .field("size", &self.data.len())
             .field("superblock_version", &self.superblock.version)
+            .field("mmap", &self.is_mmap())
             .finish()
     }
 }
@@ -161,16 +231,17 @@ impl<'f> Group<'f> {
 
     /// Read all attributes of this group.
     pub fn attrs(&self) -> Result<HashMap<String, AttrValue>, Error> {
+        let data = self.file.data.as_bytes();
         let hdr = self.file.parse_header(self.address)?;
         let attr_msgs = extract_attributes_full(
-            &self.file.data,
+            data,
             &hdr,
             self.file.offset_size(),
             self.file.length_size(),
         )?;
         Ok(attrs_to_map(
             &attr_msgs,
-            &self.file.data,
+            data,
             self.file.offset_size(),
             self.file.length_size(),
         ))
@@ -207,10 +278,11 @@ impl<'f> Group<'f> {
     }
 
     fn children(&self) -> Result<Vec<GroupEntry>, Error> {
+        let data = self.file.data.as_bytes();
         let hdr = self.file.parse_header(self.address)?;
         let os = self.file.offset_size();
         let ls = self.file.length_size();
-        resolve_group_entries(&self.file.data, &hdr, os, ls).map_err(Error::Format)
+        resolve_group_entries(data, &hdr, os, ls).map_err(Error::Format)
     }
 }
 
@@ -280,17 +352,52 @@ impl<'f> Dataset<'f> {
         Ok(data_read::read_as_strings(&raw, &dt)?)
     }
 
+    /// Zero-copy read of contiguous raw data.
+    ///
+    /// For contiguous datasets this returns a direct `&[u8]` slice into
+    /// the underlying file bytes (mmap or owned buffer) — no allocation.
+    /// Returns `None` for chunked or compact datasets.
+    pub fn read_raw_ref(&self) -> Result<Option<&'f [u8]>, Error> {
+        let dl = self.data_layout()?;
+        let ds = self.dataspace()?;
+        let dt = self.datatype()?;
+        let expected = ds.num_elements() as usize * dt.type_size() as usize;
+        match &dl {
+            DataLayout::Contiguous { address, size } => {
+                let addr = address.ok_or(Error::Format(FormatError::NoDataAllocated))?;
+                let sz = *size as usize;
+                if sz != expected {
+                    return Err(Error::Format(FormatError::DataSizeMismatch {
+                        expected,
+                        actual: sz,
+                    }));
+                }
+                let data = self.file.data.as_bytes();
+                let a = addr as usize;
+                if a + sz > data.len() {
+                    return Err(Error::Format(FormatError::UnexpectedEof {
+                        expected: a + sz,
+                        available: data.len(),
+                    }));
+                }
+                Ok(Some(&data[a..a + sz]))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Read all attributes of this dataset.
     pub fn attrs(&self) -> Result<HashMap<String, AttrValue>, Error> {
+        let data = self.file.data.as_bytes();
         let attr_msgs = extract_attributes_full(
-            &self.file.data,
+            data,
             &self.header,
             self.file.offset_size(),
             self.file.length_size(),
         )?;
         Ok(attrs_to_map(
             &attr_msgs,
-            &self.file.data,
+            data,
             self.file.offset_size(),
             self.file.length_size(),
         ))
@@ -330,7 +437,7 @@ impl<'f> Dataset<'f> {
         let dl = self.data_layout()?;
         let pipeline = self.filter_pipeline();
         Ok(data_read::read_raw_data_full(
-            &self.file.data,
+            self.file.data.as_bytes(),
             &dl,
             &ds,
             &dt,

@@ -48,6 +48,26 @@ pub struct LazyFile<R: HDF5Read> {
     header_cache: RefCell<HashMap<u64, ObjectHeader>>,
 }
 
+impl LazyFile<purehdf5_io::MemoryReader> {
+    /// Open a lazy file from an in-memory byte vector.
+    pub fn from_bytes(data: Vec<u8>) -> Result<Self, Error> {
+        let reader = purehdf5_io::MemoryReader::new(data);
+        Self::open(reader)
+    }
+}
+
+#[cfg(feature = "mmap")]
+impl LazyFile<purehdf5_io::MmapReader> {
+    /// Open a lazy file using memory-mapped I/O.
+    ///
+    /// This is the recommended way to open large files: only the superblock
+    /// and root group header are parsed eagerly; everything else is on-demand.
+    pub fn open_mmap<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
+        let reader = purehdf5_io::MmapReader::open(path).map_err(Error::Io)?;
+        Self::open(reader)
+    }
+}
+
 impl<R: HDF5Read> LazyFile<R> {
     /// Open a lazy file from any `HDF5Read` backend.
     ///

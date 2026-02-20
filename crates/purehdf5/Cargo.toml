@@ -29,6 +29,6 @@ name = "parallel_bench"
 harness = false
 
 [features]
-default = []
+default = ["mmap"]
 mmap = ["purehdf5-io/mmap"]
 parallel = ["purehdf5-format/parallel"]

@@ -192,6 +192,117 @@ fn bench_sequential_with_prefetch(c: &mut Criterion) {
     std::fs::remove_file(&path).ok();
 }
 
+// ===========================================================================
+// Bench 5: File::open (mmap default) vs File::open_buffered
+// ===========================================================================
+
+fn bench_file_open_mmap(c: &mut Criterion) {
+    let dir = std::env::temp_dir();
+    let path = dir.join("bench_file_open_mmap.h5");
+    write_contiguous_file(&path);
+
+    c.bench_function("file_open_mmap_1M_f64", |b| {
+        b.iter(|| {
+            let file = purehdf5::File::open(&path).unwrap();
+            file.dataset("data").unwrap().read_f64().unwrap()
+        })
+    });
+
+    std::fs::remove_file(&path).ok();
+}
+
+fn bench_file_open_buffered(c: &mut Criterion) {
+    let dir = std::env::temp_dir();
+    let path = dir.join("bench_file_open_buffered.h5");
+    write_contiguous_file(&path);
+
+    c.bench_function("file_open_buffered_1M_f64", |b| {
+        b.iter(|| {
+            let file = purehdf5::File::open_buffered(&path).unwrap();
+            file.dataset("data").unwrap().read_f64().unwrap()
+        })
+    });
+
+    std::fs::remove_file(&path).ok();
+}
+
+// ===========================================================================
+// Bench 6: Zero-copy raw read via read_raw_ref
+// ===========================================================================
+
+fn bench_zero_copy_raw_ref(c: &mut Criterion) {
+    let dir = std::env::temp_dir();
+    let path = dir.join("bench_zero_copy_raw.h5");
+    write_contiguous_file(&path);
+
+    c.bench_function("zero_copy_read_raw_ref_1M_f64", |b| {
+        let file = purehdf5::File::open(&path).unwrap();
+        b.iter(|| {
+            let ds = file.dataset("data").unwrap();
+            ds.read_raw_ref().unwrap()
+        })
+    });
+
+    std::fs::remove_file(&path).ok();
+}
+
+// ===========================================================================
+// Bench 7: File open only (no data read) — mmap vs buffered for 10MB file
+// ===========================================================================
+
+fn write_10mb_file(path: &Path) {
+    let n = 1_250_000; // 10MB of f64
+    let data: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let mut b = FileBuilder::new();
+    b.create_dataset("data")
+        .with_f64_data(&data)
+        .with_shape(&[n as u64]);
+    b.write(path).unwrap();
+}
+
+fn bench_file_open_only_mmap_10mb(c: &mut Criterion) {
+    let dir = std::env::temp_dir();
+    let path = dir.join("bench_open_only_mmap_10mb.h5");
+    write_10mb_file(&path);
+
+    c.bench_function("file_open_only_mmap_10MB", |b| {
+        b.iter(|| purehdf5::File::open(&path).unwrap())
+    });
+
+    std::fs::remove_file(&path).ok();
+}
+
+fn bench_file_open_only_buffered_10mb(c: &mut Criterion) {
+    let dir = std::env::temp_dir();
+    let path = dir.join("bench_open_only_buffered_10mb.h5");
+    write_10mb_file(&path);
+
+    c.bench_function("file_open_only_buffered_10MB", |b| {
+        b.iter(|| purehdf5::File::open_buffered(&path).unwrap())
+    });
+
+    std::fs::remove_file(&path).ok();
+}
+
+// ===========================================================================
+// Bench 8: LazyFile::open_mmap convenience
+// ===========================================================================
+
+fn bench_lazy_open_mmap(c: &mut Criterion) {
+    let dir = std::env::temp_dir();
+    let path = dir.join("bench_lazy_open_mmap.h5");
+    write_contiguous_file(&path);
+
+    c.bench_function("lazy_open_mmap_1M_f64", |b| {
+        b.iter(|| {
+            let lazy = LazyFile::open_mmap(&path).unwrap();
+            lazy.dataset("data").unwrap().read_f64().unwrap()
+        })
+    });
+
+    std::fs::remove_file(&path).ok();
+}
+
 criterion_group!(
     benches,
     bench_filereader_contiguous,
@@ -202,5 +313,11 @@ criterion_group!(
     bench_lazy_open_100ds,
     bench_sequential_no_prefetch,
     bench_sequential_with_prefetch,
+    bench_file_open_mmap,
+    bench_file_open_buffered,
+    bench_zero_copy_raw_ref,
+    bench_file_open_only_mmap_10mb,
+    bench_file_open_only_buffered_10mb,
+    bench_lazy_open_mmap,
 );
 criterion_main!(benches);

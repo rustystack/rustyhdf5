@@ -189,15 +189,16 @@ mod mmap_tests {
         std::fs::remove_file(&path).ok();
     }
 
-    // Test 8: File::open_mmap convenience constructor
+    // Test 8: File::open uses mmap by default
     #[test]
-    fn file_open_mmap() {
+    fn file_open_mmap_default() {
         let values = vec![42.0f64];
         let bytes = make_contiguous_f64_file(&values);
         let path = write_to_temp("mmap_convenience.h5", &bytes);
 
-        let mmap = File::open_mmap(&path).unwrap();
-        let ds = mmap.dataset("data").unwrap();
+        let file = File::open(&path).unwrap();
+        assert!(file.is_mmap());
+        let ds = file.dataset("data").unwrap();
         let data = ds.read_f64().unwrap();
         assert_eq!(data, vec![42.0]);
 
@@ -293,7 +294,7 @@ mod parallel_tests {
         }
 
         // Sequential decompression
-        let sequential: Vec<Vec<u8>> = chunk_infos
+        let _sequential: Vec<Vec<u8>> = chunk_infos
             .iter()
             .map(|ci| {
                 let addr = ci.address as usize;
