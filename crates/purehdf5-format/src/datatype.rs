@@ -137,13 +137,12 @@ pub enum Datatype {
 }
 
 fn ensure_len(data: &[u8], offset: usize, needed: usize) -> Result<(), FormatError> {
-    if offset + needed > data.len() {
-        Err(FormatError::UnexpectedEof {
-            expected: offset + needed,
+    match offset.checked_add(needed) {
+        Some(end) if end <= data.len() => Ok(()),
+        _ => Err(FormatError::UnexpectedEof {
+            expected: offset.saturating_add(needed),
             available: data.len(),
-        })
-    } else {
-        Ok(())
+        }),
     }
 }
 
@@ -167,6 +166,12 @@ fn parse_charset(val: u8) -> Result<CharacterSet, FormatError> {
 /// Read a null-terminated string from `data` starting at `offset`.
 /// Returns (string, bytes_consumed including the null terminator).
 fn read_null_terminated_string(data: &[u8], offset: usize) -> Result<(String, usize), FormatError> {
+    if offset >= data.len() {
+        return Err(FormatError::UnexpectedEof {
+            expected: offset + 1,
+            available: data.len(),
+        });
+    }
     let remaining = &data[offset..];
     let null_pos = remaining
         .iter()
@@ -369,18 +374,9 @@ impl Datatype {
                         ensure_len(data, pos, 4)?;
                         let byte_offset = LittleEndian::read_u32(&data[pos..pos + 4]) as u64;
                         pos += 4;
-                        // dimensionality
-                        ensure_len(data, pos, 1)?;
-                        let ndims = data[pos] as usize;
-                        pos += 1;
-                        // reserved(3)
-                        pos += 3;
-                        // dim_perm(4)
-                        pos += 4;
-                        // dim sizes (4 bytes each, up to 4 dims)
-                        // v1 always stores 4 dimension slots
-                        pos += 4 * 4;
-                        let _ = ndims; // we skip dimension info for v1 compound members
+                        // dimensionality(1) + reserved(3) + dim_perm(4) + 4 dim slots(16) = 24
+                        ensure_len(data, pos, 24)?;
+                        pos += 24;
                         let (member_dt, consumed) = Datatype::parse(&data[pos..])?;
                         pos += consumed;
                         members.push(CompoundMember {
@@ -699,8 +695,9 @@ impl Datatype {
             Datatype::Enumeration { size, .. } => *size,
             Datatype::VariableLength { .. } => 16, // typically pointer + length
             Datatype::Array { base_type, dimensions } => {
-                let elem_count: u32 = dimensions.iter().product();
-                base_type.type_size() * elem_count
+                let elem_count: u32 = dimensions.iter().copied()
+                    .fold(1u32, |a, b| a.saturating_mul(b));
+                base_type.type_size().saturating_mul(elem_count)
             }
         }
     }

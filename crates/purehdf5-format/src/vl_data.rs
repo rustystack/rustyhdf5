@@ -22,13 +22,12 @@ pub struct VlElement {
 }
 
 fn ensure_len(data: &[u8], offset: usize, needed: usize) -> Result<(), FormatError> {
-    if offset + needed > data.len() {
-        Err(FormatError::UnexpectedEof {
-            expected: offset + needed,
+    match offset.checked_add(needed) {
+        Some(end) if end <= data.len() => Ok(()),
+        _ => Err(FormatError::UnexpectedEof {
+            expected: offset.saturating_add(needed),
             available: data.len(),
-        })
-    } else {
-        Ok(())
+        }),
     }
 }
 

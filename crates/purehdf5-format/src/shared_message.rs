@@ -117,13 +117,12 @@ fn read_offset(data: &[u8], pos: usize, size: u8) -> Result<u64, FormatError> {
 }
 
 fn ensure_len(data: &[u8], pos: usize, needed: usize) -> Result<(), FormatError> {
-    if pos + needed > data.len() {
-        Err(FormatError::UnexpectedEof {
-            expected: pos + needed,
+    match pos.checked_add(needed) {
+        Some(end) if end <= data.len() => Ok(()),
+        _ => Err(FormatError::UnexpectedEof {
+            expected: pos.saturating_add(needed),
             available: data.len(),
-        })
-    } else {
-        Ok(())
+        }),
     }
 }
 

@@ -3,11 +3,7 @@
 //! Extracted from `file_writer.rs` to keep modules under the line limit.
 
 #[cfg(not(feature = "std"))]
-use alloc::string::String;
-#[cfg(not(feature = "std"))]
-use alloc::vec;
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
+use alloc::{boxed::Box, string::String, string::ToString, vec, vec::Vec};
 
 use crate::attribute::AttributeMessage;
 use crate::chunked_write::ChunkOptions;

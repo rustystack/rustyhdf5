@@ -167,6 +167,8 @@ pub enum FormatError {
         /// The checksum we computed.
         computed: u32,
     },
+    /// Maximum nesting/continuation depth exceeded (malformed data protection).
+    NestingDepthExceeded,
 }
 
 impl fmt::Display for FormatError {
@@ -366,6 +368,9 @@ impl fmt::Display for FormatError {
                     f,
                     "checksum mismatch: expected {expected:#010x}, computed {computed:#010x}"
                 )
+            }
+            FormatError::NestingDepthExceeded => {
+                write!(f, "maximum nesting/continuation depth exceeded")
             }
         }
     }

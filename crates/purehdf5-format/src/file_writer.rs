@@ -3,6 +3,9 @@
 //! Produces valid HDF5 files with v3 superblock, v2 object headers,
 //! link messages, contiguous datasets, inline and dense attributes.
 
+#[cfg(not(feature = "std"))]
+use alloc::{string::String, string::ToString, vec, vec::Vec};
+
 use crate::attribute::AttributeMessage;
 use crate::chunked_write::{ChunkOptions, build_chunked_data_at_ext};
 use crate::dataspace::{Dataspace, DataspaceType};
@@ -19,9 +22,6 @@ use crate::type_builders::{
 pub use crate::type_builders::{AttrValue, CompoundTypeBuilder, EnumTypeBuilder};
 #[cfg(feature = "provenance")]
 pub use crate::type_builders::ProvenanceConfig;
-
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
 
 use crate::datatype::{CharacterSet, Datatype};
 

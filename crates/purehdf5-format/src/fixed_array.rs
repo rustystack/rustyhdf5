@@ -4,7 +4,7 @@
 extern crate alloc;
 
 #[cfg(not(feature = "std"))]
-use alloc::{vec, vec::Vec};
+use alloc::{format, vec, vec::Vec};
 
 use crate::chunked_read::ChunkInfo;
 use crate::error::FormatError;
