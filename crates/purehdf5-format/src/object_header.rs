@@ -51,13 +51,12 @@ pub struct ObjectHeader {
 }
 
 fn ensure_len(data: &[u8], offset: usize, needed: usize) -> Result<(), FormatError> {
-    if offset + needed > data.len() {
-        Err(FormatError::UnexpectedEof {
-            expected: offset + needed,
+    match offset.checked_add(needed) {
+        Some(end) if end <= data.len() => Ok(()),
+        _ => Err(FormatError::UnexpectedEof {
+            expected: offset.saturating_add(needed),
             available: data.len(),
-        })
-    } else {
-        Ok(())
+        }),
     }
 }
 
@@ -115,13 +114,19 @@ impl ObjectHeader {
 
         // Pad to 8-byte alignment: header prefix is 12 bytes, pad to 16
         let padding = 4; // pad 12-byte prefix to 16-byte alignment
-        let msg_start = offset + 12 + padding;
+        let msg_start = offset.checked_add(12 + padding).ok_or(FormatError::UnexpectedEof {
+            expected: usize::MAX,
+            available: data.len(),
+        })?;
 
         ensure_len(data, msg_start, header_data_size)?;
 
         let mut messages = Vec::new();
         let mut pos = msg_start;
-        let msg_end = msg_start + header_data_size;
+        let msg_end = msg_start.checked_add(header_data_size).ok_or(FormatError::UnexpectedEof {
+            expected: usize::MAX,
+            available: data.len(),
+        })?;
 
         for _ in 0..num_messages {
             if pos + 8 > msg_end {
@@ -172,6 +177,7 @@ impl ObjectHeader {
                         cont_length,
                         offset_size,
                         length_size,
+                        32, // max continuation depth
                     )?;
                     messages.extend(cont_msgs);
                 }
@@ -196,11 +202,15 @@ impl ObjectHeader {
         length: usize,
         offset_size: u8,
         length_size: u8,
+        depth_remaining: u16,
     ) -> Result<Vec<HeaderMessage>, FormatError> {
+        if depth_remaining == 0 {
+            return Err(FormatError::NestingDepthExceeded);
+        }
         ensure_len(data, offset, length)?;
         let mut messages = Vec::new();
         let mut pos = offset;
-        let end = offset + length;
+        let end = offset.saturating_add(length);
 
         while pos + 8 <= end {
             let msg_type_raw = LittleEndian::read_u16(&data[pos..pos + 2]);
@@ -244,6 +254,7 @@ impl ObjectHeader {
                             as usize;
                     let cont_msgs = Self::parse_v1_continuation(
                         data, cont_offset, cont_length, offset_size, length_size,
+                        depth_remaining - 1,
                     )?;
                     messages.extend(cont_msgs);
                 }
@@ -303,7 +314,10 @@ impl ObjectHeader {
         pos += chunk_size_width as usize;
 
         let chunk0_msg_start = pos;
-        let chunk0_msg_end = pos + chunk0_size; // messages end here, then 4-byte checksum
+        let chunk0_msg_end = pos.checked_add(chunk0_size).ok_or(FormatError::UnexpectedEof {
+            expected: usize::MAX,
+            available: data.len(),
+        })?;
 
         // Validate checksum: from OHDR signature through all messages (before checksum)
         ensure_len(data, chunk0_msg_end, 4)?;
@@ -336,8 +350,13 @@ impl ObjectHeader {
             &mut continuations,
         )?;
 
-        // Follow continuations
+        // Follow continuations (limit to prevent cycles in malformed data)
+        let mut cont_remaining = 256u16;
         while let Some((cont_offset, cont_length)) = continuations.pop() {
+            if cont_remaining == 0 {
+                return Err(FormatError::NestingDepthExceeded);
+            }
+            cont_remaining -= 1;
             Self::parse_v2_continuation(
                 data,
                 cont_offset,

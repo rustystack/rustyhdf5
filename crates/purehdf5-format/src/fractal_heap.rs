@@ -55,13 +55,12 @@ fn read_offset(data: &[u8], pos: usize, size: u8) -> Result<u64, FormatError> {
 }
 
 fn ensure_len(data: &[u8], pos: usize, needed: usize) -> Result<(), FormatError> {
-    if pos + needed > data.len() {
-        Err(FormatError::UnexpectedEof {
-            expected: pos + needed,
+    match pos.checked_add(needed) {
+        Some(end) if end <= data.len() => Ok(()),
+        _ => Err(FormatError::UnexpectedEof {
+            expected: pos.saturating_add(needed),
             available: data.len(),
-        })
-    } else {
-        Ok(())
+        }),
     }
 }
 
@@ -82,7 +81,7 @@ impl FractalHeapHeader {
         offset_size: u8,
         length_size: u8,
     ) -> Result<FractalHeapHeader, FormatError> {
-        ensure_len(file_data, offset, 4)?;
+        ensure_len(file_data, offset, 5)?;
         if &file_data[offset..offset + 4] != b"FRHP" {
             return Err(FormatError::InvalidFractalHeapSignature);
         }
@@ -114,20 +113,13 @@ impl FractalHeapHeader {
         ]);
         pos += 4;
 
-        // next_huge_object_id (length_size)
-        pos += ls;
-        // btree_huge_objects_address (offset_size)
-        pos += os;
-        // free_space_managed_blocks (length_size)
-        pos += ls;
-        // managed_block_free_space_manager_address (offset_size)
-        pos += os;
-        // managed_space_in_heap (length_size)
-        pos += ls;
-        // allocated_managed_space_in_heap (length_size)
-        pos += ls;
-        // direct_block_allocation_iterator_offset (length_size)
-        pos += ls;
+        // Skip several fixed fields: next_huge_object_id(ls), btree_huge_objects_address(os),
+        // free_space_managed_blocks(ls), managed_block_free_space_manager_address(os),
+        // managed_space_in_heap(ls), allocated_managed_space_in_heap(ls),
+        // direct_block_allocation_iterator_offset(ls)
+        let skip_size = 5 * ls + 2 * os;
+        ensure_len(file_data, pos, skip_size)?;
+        pos += skip_size;
 
         // managed_objects_count (length_size)
         let managed_objects_count = read_offset(file_data, pos, length_size)?;
@@ -174,12 +166,16 @@ impl FractalHeapHeader {
         ensure_len(file_data, pos, 2)?;
         let current_rows_in_root_indirect_block =
             u16::from_le_bytes([file_data[pos], file_data[pos + 1]]);
-        pos += 2;
+        #[allow(unused_variables, unused_mut, unused_assignments)]
+        let mut pos = pos + 2;
 
         // Skip IO filter encoded info if present
         if io_filter_encoded_length > 0 {
             // root_block_filter_info_size (length_size) + filter_mask (4)
-            pos += ls + 4;
+            #[allow(unused_assignments)]
+            {
+                pos += ls + 4;
+            }
         }
 
         // Validate header checksum
