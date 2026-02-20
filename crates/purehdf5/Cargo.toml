@@ -12,3 +12,6 @@ readme = "../../README.md"
 [dependencies]
 purehdf5-format = { path = "../purehdf5-format" }
 purehdf5-io = { path = "../purehdf5-io" }
+
+[dev-dependencies]
+tempfile = "3"

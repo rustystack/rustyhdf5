@@ -11,3 +11,6 @@ categories = ["parser-implementations", "science"]
 [dependencies]
 purehdf5 = { path = "../purehdf5" }
 purehdf5-format = { path = "../purehdf5-format" }
+
+[dev-dependencies]
+tempfile = "3"
