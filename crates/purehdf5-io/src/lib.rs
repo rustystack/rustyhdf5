@@ -197,6 +197,12 @@ impl HDF5ReadWrite for FileWriter {
 // MmapReader — optional memory-mapped file reader (behind "mmap" feature)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "async")]
+pub mod async_read;
+
+#[cfg(feature = "hsds")]
+pub mod hsds;
+
 #[cfg(feature = "mmap")]
 mod mmap_reader {
     use super::HDF5Read;
