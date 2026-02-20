@@ -1,0 +1,19 @@
+[package]
+name = "purehdf5-py"
+version = "0.1.0"
+edition = "2021"
+description = "Python bindings for purehdf5 — a pure-Rust HDF5 library"
+license = "MIT"
+
+[lib]
+name = "purehdf5"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+purehdf5_rs = { path = "../purehdf5", package = "purehdf5" }
+purehdf5-format = { path = "../purehdf5-format" }
+pyo3 = "0.23"
+numpy = "0.23"
+
+[features]
+extension-module = ["pyo3/extension-module"]

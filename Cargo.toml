@@ -6,5 +6,6 @@ members = [
     "crates/purehdf5-filters",
     "crates/purehdf5-derive",
     "crates/purehdf5",
+    "crates/purehdf5-py",
 ]
 resolver = "2"
