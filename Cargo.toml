@@ -9,5 +9,6 @@ members = [
     "crates/purehdf5-netcdf4",
     "crates/purehdf5-ann",
     "crates/purehdf5-py",
+    "crates/purehdf5-accel",
 ]
 resolver = "2"
