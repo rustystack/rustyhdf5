@@ -3,6 +3,9 @@
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
+#[cfg(feature = "checksum")]
+use byteorder::{ByteOrder, LittleEndian};
+
 use crate::error::FormatError;
 
 /// Parsed fractal heap header (signature "FRHP").
@@ -171,8 +174,27 @@ impl FractalHeapHeader {
         ensure_len(file_data, pos, 2)?;
         let current_rows_in_root_indirect_block =
             u16::from_le_bytes([file_data[pos], file_data[pos + 1]]);
+        pos += 2;
 
-        // skip io_filter info and checksum
+        // Skip IO filter encoded info if present
+        if io_filter_encoded_length > 0 {
+            // root_block_filter_info_size (length_size) + filter_mask (4)
+            pos += ls + 4;
+        }
+
+        // Validate header checksum
+        #[cfg(feature = "checksum")]
+        {
+            ensure_len(file_data, pos, 4)?;
+            let stored = LittleEndian::read_u32(&file_data[pos..pos + 4]);
+            let computed = crate::checksum::jenkins_lookup3(&file_data[offset..pos]);
+            if computed != stored {
+                return Err(FormatError::ChecksumMismatch {
+                    expected: stored,
+                    computed,
+                });
+            }
+        }
 
         Ok(FractalHeapHeader {
             heap_id_length,
@@ -270,7 +292,7 @@ impl FractalHeapHeader {
                 offset_size,
             )
         } else {
-            // Root is an indirect block
+            // Root is an indirect block — limit recursion to 64 levels
             self.read_from_indirect_block(
                 file_data,
                 self.root_block_address as usize,
@@ -279,6 +301,7 @@ impl FractalHeapHeader {
                 heap_offset,
                 obj_len as usize,
                 offset_size,
+                64, // max recursion depth
             )
         }
     }
@@ -315,7 +338,13 @@ impl FractalHeapHeader {
         target_offset: u64,
         length: usize,
         offset_size: u8,
+        depth_remaining: u16,
     ) -> Result<Vec<u8>, FormatError> {
+        if depth_remaining == 0 {
+            return Err(FormatError::ChunkedReadError(
+                "fractal heap: maximum recursion depth exceeded".into(),
+            ));
+        }
         // Parse indirect block header
         ensure_len(file_data, iblock_addr, 4)?;
         if &file_data[iblock_addr..iblock_addr + 4] != b"FHIB" {
@@ -393,6 +422,7 @@ impl FractalHeapHeader {
                             target_offset,
                             length,
                             offset_size,
+                            depth_remaining - 1,
                         );
                     }
                     current_heap_offset += total_child_space;
@@ -527,6 +557,10 @@ mod tests {
         // current_rows_in_root_indirect_block (2) = 0 (root is direct)
         buf[pos..pos + 2].copy_from_slice(&0u16.to_le_bytes());
         pos += 2;
+        // checksum
+        let checksum = crate::checksum::jenkins_lookup3(&buf[0..pos]);
+        buf[pos..pos + 4].copy_from_slice(&checksum.to_le_bytes());
+        pos += 4;
         let header_end = pos;
 
         // Build direct block at dblock_offset

@@ -3,6 +3,9 @@
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
+#[cfg(feature = "checksum")]
+use byteorder::{ByteOrder, LittleEndian};
+
 use crate::error::FormatError;
 
 /// Parsed B-tree v2 header (signature "BTHD").
@@ -122,8 +125,21 @@ impl BTreeV2Header {
         pos += 2;
 
         let total_records = read_offset(file_data, pos, length_size)?;
-        // pos += length_size as usize;
-        // checksum(4) follows
+        pos += length_size as usize;
+
+        // Validate header checksum
+        #[cfg(feature = "checksum")]
+        {
+            ensure_len(file_data, pos, 4)?;
+            let stored = LittleEndian::read_u32(&file_data[pos..pos + 4]);
+            let computed = crate::checksum::jenkins_lookup3(&file_data[offset..pos]);
+            if computed != stored {
+                return Err(FormatError::ChecksumMismatch {
+                    expected: stored,
+                    computed,
+                });
+            }
+        }
 
         Ok(BTreeV2Header {
             tree_type,
@@ -206,6 +222,22 @@ fn parse_leaf_records(
     let rs = record_size as usize;
     let total = num_records as usize * rs;
     ensure_len(file_data, pos, total)?;
+
+    // Validate checksum: 4 bytes after records + padding
+    #[cfg(feature = "checksum")]
+    {
+        let checksum_pos = pos + total;
+        if file_data.len() >= checksum_pos + 4 {
+            let stored = LittleEndian::read_u32(&file_data[checksum_pos..checksum_pos + 4]);
+            let computed = crate::checksum::jenkins_lookup3(&file_data[offset..checksum_pos]);
+            if computed != stored {
+                return Err(FormatError::ChecksumMismatch {
+                    expected: stored,
+                    computed,
+                });
+            }
+        }
+    }
 
     let mut records = Vec::with_capacity(num_records as usize);
     for i in 0..num_records as usize {
@@ -366,7 +398,8 @@ mod tests {
             8 => buf.extend_from_slice(&total_records.to_le_bytes()),
             _ => {}
         }
-        buf.extend_from_slice(&0u32.to_le_bytes()); // checksum
+        let checksum = crate::checksum::jenkins_lookup3(&buf);
+        buf.extend_from_slice(&checksum.to_le_bytes());
         buf
     }
 
@@ -378,7 +411,8 @@ mod tests {
         for rec in records {
             buf.extend_from_slice(rec);
         }
-        buf.extend_from_slice(&0u32.to_le_bytes()); // checksum
+        let checksum = crate::checksum::jenkins_lookup3(&buf);
+        buf.extend_from_slice(&checksum.to_le_bytes());
         buf
     }
 

@@ -157,7 +157,8 @@ impl ObjectHeader {
 
             // Follow continuations
             if msg_type == MessageType::ObjectHeaderContinuation {
-                let cont_msg_data = &messages.last().unwrap().data;
+                let cont_msg_data = &messages.last()
+                    .ok_or(FormatError::InvalidObjectHeaderSignature)?.data;
                 if cont_msg_data.len() >= (offset_size as usize + length_size as usize) {
                     let cont_offset =
                         read_offset(cont_msg_data, 0, offset_size)? as usize;
@@ -233,7 +234,8 @@ impl ObjectHeader {
 
             // Recursive continuations
             if msg_type == MessageType::ObjectHeaderContinuation {
-                let cont_msg_data = &messages.last().unwrap().data;
+                let cont_msg_data = &messages.last()
+                    .ok_or(FormatError::InvalidObjectHeaderSignature)?.data;
                 if cont_msg_data.len() >= (offset_size as usize + length_size as usize) {
                     let cont_offset =
                         read_offset(cont_msg_data, 0, offset_size)? as usize;
