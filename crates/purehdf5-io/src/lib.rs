@@ -194,7 +194,7 @@ impl HDF5ReadWrite for FileWriter {
 }
 
 // ---------------------------------------------------------------------------
-// MmapReader — optional memory-mapped file reader (behind "mmap" feature)
+// Optional modules
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "async")]
@@ -204,47 +204,12 @@ pub mod async_read;
 pub mod hsds;
 
 #[cfg(feature = "mmap")]
-mod mmap_reader {
-    use super::HDF5Read;
-    use memmap2::Mmap;
-    use std::fs;
-    use std::io;
-
-    /// Memory-mapped file reader for zero-copy access to large files.
-    ///
-    /// Uses `memmap2` to map the file into the process address space.
-    /// This avoids reading the entire file into a `Vec<u8>`, which can
-    /// be beneficial for very large files.
-    pub struct MmapReader {
-        _file: fs::File,
-        mmap: Mmap,
-    }
-
-    impl MmapReader {
-        /// Open a file and memory-map it for reading.
-        ///
-        /// # Safety
-        ///
-        /// The caller must ensure that the underlying file is not modified
-        /// by another process while the mapping is active.
-        pub fn open<P: AsRef<std::path::Path>>(path: P) -> io::Result<Self> {
-            let file = fs::File::open(path)?;
-            // SAFETY: We are creating a read-only mapping. The caller is
-            // responsible for ensuring the file is not concurrently modified.
-            let mmap = unsafe { Mmap::map(&file)? };
-            Ok(Self { _file: file, mmap })
-        }
-    }
-
-    impl HDF5Read for MmapReader {
-        fn as_bytes(&self) -> &[u8] {
-            &self.mmap
-        }
-    }
-}
+pub mod mmap;
 
 #[cfg(feature = "mmap")]
-pub use mmap_reader::MmapReader;
+pub use mmap::{MmapReader, MmapReadWrite};
+
+pub mod prefetch;
 
 #[cfg(test)]
 mod tests {

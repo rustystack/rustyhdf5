@@ -25,11 +25,13 @@
 //! ```
 
 pub mod error;
+pub mod lazy;
 pub mod reader;
 pub mod types;
 pub mod writer;
 
 pub use error::Error;
+pub use lazy::{LazyDataset, LazyFile, LazyGroup};
 pub use reader::{Dataset, File, Group};
 pub use types::{AttrValue, DType};
 pub use writer::FileBuilder;
