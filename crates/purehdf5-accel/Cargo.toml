@@ -1,0 +1,14 @@
+[package]
+name = "purehdf5-accel"
+version = "0.1.0"
+edition = "2021"
+description = "SIMD-accelerated operations for purehdf5"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+float16 = ["dep:half"]
+avx512 = []
+
+[dependencies]
+half = { version = "2", optional = true }

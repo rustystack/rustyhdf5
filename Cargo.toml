@@ -10,5 +10,6 @@ members = [
     "crates/purehdf5-ann",
     "crates/purehdf5-py",
     "crates/purehdf5-gpu",
+    "crates/purehdf5-accel",
 ]
 resolver = "2"
