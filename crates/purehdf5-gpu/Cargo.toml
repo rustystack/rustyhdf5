@@ -1,0 +1,30 @@
+[package]
+name = "purehdf5-gpu"
+version = "0.1.0"
+edition = "2021"
+description = "GPU-accelerated vector operations for purehdf5 using wgpu compute shaders"
+license = "MIT"
+repository = "https://github.com/nicosalm/purehdf5-rs"
+
+[dependencies]
+wgpu = { version = "28", optional = true }
+half = { version = "2.7", optional = true }
+pollster = { version = "0.4", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
+thiserror = "2"
+log = "0.4"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.8"
+approx = "0.5"
+pollster = "0.4"
+env_logger = "0.11"
+
+[[bench]]
+name = "bench"
+harness = false
+
+[features]
+default = ["gpu-wgpu"]
+gpu-wgpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck", "dep:half"]
