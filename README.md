@@ -12,6 +12,10 @@ A pure-Rust HDF5 reader and writer with zero C dependencies. Read and write HDF5
 - **All numeric types** — f32, f64, i32, i64, u8, u64, plus fixed and variable-length strings
 - **h5py compatible** — files round-trip with Python's h5py library
 - **`no_std` support** — `purehdf5-format` works without the standard library
+- **Dense attributes** — automatic fractal heap + B-tree v2 for >8 attributes
+- **Compound/Enum/Array types** — struct-like, enumeration, and fixed-size array datasets
+- **SHINES provenance** — SHA-256 content hashing, creator/timestamp metadata, integrity verification
+- **Checksum validation** — Jenkins lookup3 checksum verification on read
 - **Zero C dependencies** — no libhdf5, no build scripts, pure Rust
 
 ## Quick Start
@@ -121,6 +125,22 @@ let g = grp.finish();
 fw.add_group(g);
 
 let bytes = fw.finish().unwrap();
+```
+
+### Data provenance
+
+```rust
+use purehdf5_format::file_writer::FileWriter;
+
+let mut fw = FileWriter::new();
+fw.create_dataset("sensor")
+    .with_f64_data(&[22.5, 23.1, 21.8])
+    .with_shape(&[3])
+    .with_provenance("my-app/v1.0", "2026-02-19T12:00:00Z", Some("sensor_42"));
+let bytes = fw.finish().unwrap();
+// The file now contains _provenance_sha256, _provenance_creator,
+// _provenance_timestamp, and _provenance_source attributes.
+// Use purehdf5_format::provenance::verify_dataset() to check integrity.
 ```
 
 ## Crates

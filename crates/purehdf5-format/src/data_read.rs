@@ -411,7 +411,7 @@ pub struct EnumValue {
 
 /// Read enum dataset values, mapping integer values to their string names.
 ///
-/// Returns one `EnumValue` per element. Unknown values get name "UNKNOWN(<hex>)".
+/// Returns one `EnumValue` per element. Unknown values get name `UNKNOWN(hex)`.
 pub fn read_enum_values(raw: &[u8], datatype: &Datatype) -> Result<Vec<EnumValue>, FormatError> {
     match datatype {
         Datatype::Enumeration { size, members, .. } => {
