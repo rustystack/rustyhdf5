@@ -8,3 +8,7 @@ repository = "https://github.com/nicosalm/purehdf5-rs"
 keywords = ["hdf5", "science", "data", "binary"]
 categories = ["parser-implementations", "science", "encoding"]
 readme = "../../README.md"
+
+[dependencies]
+purehdf5-format = { path = "../purehdf5-format" }
+purehdf5-io = { path = "../purehdf5-io" }

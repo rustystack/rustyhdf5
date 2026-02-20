@@ -7,3 +7,11 @@ license = "MIT"
 repository = "https://github.com/nicosalm/purehdf5-rs"
 keywords = ["hdf5", "io", "science", "data"]
 categories = ["filesystem", "science"]
+
+[dependencies]
+purehdf5-format = { path = "../purehdf5-format" }
+memmap2 = { version = "0.9", optional = true }
+
+[features]
+default = []
+mmap = ["memmap2"]
