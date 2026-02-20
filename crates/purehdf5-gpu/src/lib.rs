@@ -31,6 +31,8 @@ pub mod error;
 #[cfg(feature = "gpu-wgpu")]
 mod accelerator;
 #[cfg(feature = "gpu-wgpu")]
+mod helpers;
+#[cfg(feature = "gpu-wgpu")]
 mod shaders;
 
 pub use device::DeviceInfo;

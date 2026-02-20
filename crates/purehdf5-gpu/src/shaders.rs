@@ -135,7 +135,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 /// Convert f16 (stored as u32 pairs) to f32.
 /// Input is packed: two f16 values per u32 element.
-/// vectors_u32 has ceil(N*D/2) elements.
 pub const F16_TO_F32: &str = r#"
 struct Params {
     total: u32,
@@ -162,7 +161,6 @@ fn f16_to_f32_manual(bits: u32) -> f32 {
         if sign == 1u { return -f; } else { return f; }
     }
     if exp == 31u {
-        // Inf / NaN — just return large value or NaN
         if mant != 0u {
             return bitcast<f32>(0x7FC00000u); // NaN
         }
@@ -181,7 +179,6 @@ fn f16_to_f32_manual(bits: u32) -> f32 {
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
-    // Each input u32 holds 2 f16 values (low and high 16 bits)
     let pair_count = (params.total + 1u) / 2u;
     if i >= pair_count {
         return;
@@ -195,5 +192,112 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if out_idx + 1u < params.total {
         output[out_idx + 1u] = f16_to_f32_manual(hi);
     }
+}
+"#;
+
+/// Convert f32 values to f16 (packed as u32 pairs).
+/// Output is packed: two f16 values per u32 element.
+pub const F32_TO_F16: &str = r#"
+struct Params {
+    total: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> input: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output: array<u32>;
+
+fn f32_to_f16_manual(val: f32) -> u32 {
+    let bits = bitcast<u32>(val);
+    let sign = (bits >> 31u) & 1u;
+    let exp = (bits >> 23u) & 0xFFu;
+    let mant = bits & 0x7FFFFFu;
+
+    // Zero
+    if exp == 0u && mant == 0u {
+        return sign << 15u;
+    }
+    // Inf or NaN
+    if exp == 255u {
+        if mant != 0u {
+            return (sign << 15u) | 0x7E00u; // NaN
+        }
+        return (sign << 15u) | 0x7C00u; // Inf
+    }
+    // f32 subnormal -> f16 zero
+    if exp == 0u {
+        return sign << 15u;
+    }
+    // Overflow: exponent > 15 (f32 biased > 142)
+    if exp > 142u {
+        return (sign << 15u) | 0x7C00u;
+    }
+    // Underflow to zero: exponent < -24 (f32 biased < 103)
+    if exp < 103u {
+        return sign << 15u;
+    }
+    // Subnormal f16: exponent < -14 (f32 biased < 113)
+    if exp < 113u {
+        let shift = 113u - exp;
+        let subnorm = (mant | 0x800000u) >> (shift + 13u);
+        return (sign << 15u) | subnorm;
+    }
+    // Normal f16
+    let f16_exp = exp - 112u;
+    let f16_mant = mant >> 13u;
+    return (sign << 15u) | (f16_exp << 10u) | f16_mant;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let pair_count = (params.total + 1u) / 2u;
+    if i >= pair_count {
+        return;
+    }
+    let idx0 = i * 2u;
+    let lo = f32_to_f16_manual(input[idx0]);
+    var hi: u32 = 0u;
+    if idx0 + 1u < params.total {
+        hi = f32_to_f16_manual(input[idx0 + 1u]);
+    }
+    output[i] = lo | (hi << 16u);
+}
+"#;
+
+/// Distance matrix: computes L2 distance for all (query, vector) pairs.
+/// Uses 16×16 workgroup tiling for cache efficiency.
+/// Output: Q×N matrix in row-major order.
+pub const DISTANCE_MATRIX: &str = r#"
+struct Params {
+    dim: u32,
+    n: u32,
+    q: u32,
+    _pad: u32,
+}
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> queries: array<f32>;
+@group(0) @binding(2) var<storage, read> vectors: array<f32>;
+@group(0) @binding(3) var<storage, read_write> distances: array<f32>;
+
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let ni = gid.x;
+    let qi = gid.y;
+    if qi >= params.q || ni >= params.n {
+        return;
+    }
+    let dim = params.dim;
+    let q_base = qi * dim;
+    let v_base = ni * dim;
+    var dist: f32 = 0.0;
+    for (var d: u32 = 0u; d < dim; d = d + 1u) {
+        let diff = queries[q_base + d] - vectors[v_base + d];
+        dist = dist + diff * diff;
+    }
+    distances[qi * params.n + ni] = dist;
 }
 "#;
