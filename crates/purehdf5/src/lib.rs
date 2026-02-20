@@ -26,12 +26,16 @@
 
 pub mod error;
 pub mod lazy;
+#[cfg(feature = "mmap")]
+pub mod mmap_file;
 pub mod reader;
 pub mod types;
 pub mod writer;
 
 pub use error::Error;
 pub use lazy::{LazyDataset, LazyFile, LazyGroup};
+#[cfg(feature = "mmap")]
+pub use mmap_file::{MmapDataset, MmapFile, MmapGroup};
 pub use reader::{Dataset, File, Group};
 pub use types::{AttrValue, DType};
 pub use writer::FileBuilder;

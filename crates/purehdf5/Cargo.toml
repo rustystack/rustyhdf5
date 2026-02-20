@@ -17,11 +17,18 @@ purehdf5-io = { path = "../purehdf5-io" }
 tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
 purehdf5-io = { path = "../purehdf5-io", features = ["mmap"] }
+purehdf5-format = { path = "../purehdf5-format", features = ["parallel", "fast-checksum"] }
+purehdf5-filters = { path = "../purehdf5-filters" }
 
 [[bench]]
 name = "mmap_bench"
 harness = false
 
+[[bench]]
+name = "parallel_bench"
+harness = false
+
 [features]
 default = []
 mmap = ["purehdf5-io/mmap"]
+parallel = ["purehdf5-format/parallel"]

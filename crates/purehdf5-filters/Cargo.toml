@@ -7,3 +7,18 @@ license = "MIT"
 repository = "https://github.com/nicosalm/purehdf5-rs"
 keywords = ["hdf5", "compression", "deflate", "filters"]
 categories = ["compression", "science"]
+
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
+libdeflater = { version = "1", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "deflate_bench"
+harness = false
+
+[features]
+default = []
+fast-deflate = ["libdeflater"]

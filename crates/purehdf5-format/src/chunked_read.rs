@@ -15,6 +15,60 @@ use crate::filters::decompress_chunk;
 use crate::extensible_array::{ExtensibleArrayHeader, read_extensible_array_chunks};
 use crate::fixed_array::{FixedArrayHeader, read_fixed_array_chunks};
 
+#[cfg(feature = "parallel")]
+use crate::parallel_read;
+
+/// Decompress all chunks, using parallel decompression when the `parallel`
+/// feature is enabled and the chunk count exceeds the threshold.
+fn decompress_all_chunks(
+    file_data: &[u8],
+    chunks: &[ChunkInfo],
+    pipeline: Option<&FilterPipeline>,
+    chunk_total_bytes: usize,
+    element_size: u32,
+) -> Result<Vec<Vec<u8>>, FormatError> {
+    #[cfg(feature = "parallel")]
+    {
+        if let Some(pl) = pipeline {
+            if parallel_read::should_use_parallel(chunks.len()) {
+                return parallel_read::decompress_chunks_parallel(
+                    file_data,
+                    chunks,
+                    pl,
+                    chunk_total_bytes,
+                    element_size,
+                );
+            }
+        }
+    }
+
+    // Sequential fallback
+    let mut result = Vec::with_capacity(chunks.len());
+    for chunk_info in chunks {
+        let c_addr = chunk_info.address as usize;
+        let size = chunk_info.chunk_size as usize;
+        if c_addr + size > file_data.len() {
+            return Err(FormatError::UnexpectedEof {
+                expected: c_addr + size,
+                available: file_data.len(),
+            });
+        }
+        let raw_chunk = &file_data[c_addr..c_addr + size];
+
+        let decompressed = if let Some(pl) = pipeline {
+            if chunk_info.filter_mask == 0 {
+                decompress_chunk(raw_chunk, pl, chunk_total_bytes, element_size)?
+            } else {
+                raw_chunk.to_vec()
+            }
+        } else {
+            raw_chunk.to_vec()
+        };
+        result.push(decompressed);
+    }
+    Ok(result)
+}
+
 /// Information about a single chunk in a chunked dataset.
 #[derive(Debug, Clone)]
 pub struct ChunkInfo {
@@ -333,28 +387,18 @@ pub fn read_chunked_data(
     }
 
     let chunk_total_elements: usize = chunk_dims.iter().product();
+    let chunk_total_bytes = chunk_total_elements * elem_size;
 
-    for chunk_info in &chunks {
-        let c_addr = chunk_info.address as usize;
-        let size = chunk_info.chunk_size as usize;
-        if c_addr + size > file_data.len() {
-            return Err(FormatError::UnexpectedEof {
-                expected: c_addr + size,
-                available: file_data.len(),
-            });
-        }
-        let raw_chunk = &file_data[c_addr..c_addr + size];
+    // Decompress all chunks (parallel when beneficial, sequential otherwise)
+    let decompressed_chunks = decompress_all_chunks(
+        file_data,
+        &chunks,
+        pipeline,
+        chunk_total_bytes,
+        elem_size as u32,
+    )?;
 
-        let decompressed = if let Some(pl) = pipeline {
-            if chunk_info.filter_mask == 0 {
-                decompress_chunk(raw_chunk, pl, chunk_total_elements * elem_size, elem_size as u32)?
-            } else {
-                raw_chunk.to_vec()
-            }
-        } else {
-            raw_chunk.to_vec()
-        };
-
+    for (chunk_info, decompressed) in chunks.iter().zip(decompressed_chunks.iter()) {
         // B-tree v1 (v3) offsets have rank+1 dims; v4 index offsets have rank dims
         let chunk_offsets: Vec<usize> = chunk_info.offsets.iter()
             .take(rank)
@@ -366,7 +410,7 @@ pub fn read_chunked_data(
             output[..copy_len].copy_from_slice(&decompressed[..copy_len]);
         } else {
             copy_chunk_to_output(
-                &decompressed,
+                decompressed,
                 &mut output,
                 &chunk_offsets,
                 &chunk_dims,
