@@ -1,5 +1,8 @@
 //! HDF5 Superblock parsing for versions 0, 1, 2, and 3.
 
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
 use byteorder::{ByteOrder, LittleEndian};
 
 use crate::error::FormatError;
