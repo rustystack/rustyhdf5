@@ -1,111 +1,50 @@
 //! Filter and compression pipeline for HDF5.
 //!
-//! Provides deflate (zlib) decompression/compression with an optional fast
-//! backend via the `fast-deflate` feature (uses `libdeflater` instead of
-//! `miniz_oxide`).
+//! Provides deflate (zlib) decompression/compression with multiple backend options:
+//!
+//! - **Default**: `miniz_oxide` (pure Rust, no C dependencies)
+//! - **`fast-deflate` feature**: `zlib-ng` via flate2 (~2-3x faster, matches C HDF5)
+//! - **`apple-compression` feature**: Apple Compression Framework on macOS
+//!   (hardware-accelerated on Apple Silicon)
+//!
+//! Backend priority: apple-compression > zlib-ng > miniz_oxide.
+
+pub mod fast_deflate;
 
 /// Decompress zlib-compressed data.
 ///
-/// When `fast-deflate` is enabled, uses `libdeflater` which is 2-3x faster
-/// than `miniz_oxide`.  Falls back to `flate2` (miniz_oxide) otherwise.
+/// Uses the fastest available backend. When `max_output_size` > 0,
+/// pre-allocates the output buffer for streaming decompression.
 pub fn deflate_decompress(data: &[u8], max_output_size: usize) -> Result<Vec<u8>, String> {
-    #[cfg(feature = "fast-deflate")]
-    {
-        fast_deflate_decompress(data, max_output_size)
-    }
-    #[cfg(not(feature = "fast-deflate"))]
-    {
-        default_deflate_decompress(data, max_output_size)
-    }
+    fast_deflate::decompress(data, max_output_size)
 }
 
 /// Compress data with zlib.
 ///
-/// When `fast-deflate` is enabled, uses `libdeflater`.
+/// Uses the fastest available backend.
 pub fn deflate_compress(data: &[u8], level: u32) -> Result<Vec<u8>, String> {
-    #[cfg(feature = "fast-deflate")]
-    {
-        fast_deflate_compress(data, level)
-    }
-    #[cfg(not(feature = "fast-deflate"))]
-    {
-        default_deflate_compress(data, level)
-    }
+    fast_deflate::compress(data, level)
 }
 
-// ---------------------------------------------------------------------------
-// Default backend: flate2 (miniz_oxide)
-// ---------------------------------------------------------------------------
-
-#[cfg(not(feature = "fast-deflate"))]
-fn default_deflate_decompress(data: &[u8], _max_output_size: usize) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    let mut decoder = flate2::read::ZlibDecoder::new(data);
-    let mut result = Vec::new();
-    decoder
-        .read_to_end(&mut result)
-        .map_err(|e| e.to_string())?;
-    Ok(result)
-}
-
-#[cfg(not(feature = "fast-deflate"))]
-fn default_deflate_compress(data: &[u8], level: u32) -> Result<Vec<u8>, String> {
-    use std::io::Write;
-    let mut encoder =
-        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(level));
-    encoder.write_all(data).map_err(|e| e.to_string())?;
-    encoder.finish().map_err(|e| e.to_string())
-}
-
-// ---------------------------------------------------------------------------
-// Fast backend: libdeflater
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "fast-deflate")]
-fn fast_deflate_decompress(data: &[u8], max_output_size: usize) -> Result<Vec<u8>, String> {
-    let mut decompressor = libdeflater::Decompressor::new();
-    let mut output = vec![0u8; max_output_size];
-    let actual_size = decompressor
-        .zlib_decompress(data, &mut output)
-        .map_err(|e| format!("libdeflater decompress error: {e:?}"))?;
-    output.truncate(actual_size);
-    Ok(output)
-}
-
-#[cfg(feature = "fast-deflate")]
-fn fast_deflate_compress(data: &[u8], level: u32) -> Result<Vec<u8>, String> {
-    let level = libdeflater::CompressionLvl::new(level.clamp(1, 12) as i32)
-        .map_err(|e| format!("libdeflater level error: {e:?}"))?;
-    let mut compressor = libdeflater::Compressor::new(level);
-    let max_size = compressor.zlib_compress_bound(data.len());
-    let mut output = vec![0u8; max_size];
-    let actual_size = compressor
-        .zlib_compress(data, &mut output)
-        .map_err(|e| format!("libdeflater compress error: {e:?}"))?;
-    output.truncate(actual_size);
-    Ok(output)
-}
-
-/// Decompress zlib data using the default (miniz_oxide) backend.
-/// Available regardless of feature flags for comparison/testing.
+/// Decompress zlib data using the pure-Rust miniz_oxide backend.
+/// Always available regardless of feature flags, for comparison/testing.
 pub fn deflate_decompress_miniz(data: &[u8]) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    let mut decoder = flate2::read::ZlibDecoder::new(data);
-    let mut result = Vec::new();
-    decoder
-        .read_to_end(&mut result)
-        .map_err(|e| e.to_string())?;
+    let result = miniz_oxide::inflate::decompress_to_vec_zlib(data)
+        .map_err(|e| format!("miniz_oxide decompress error: {e:?}"))?;
     Ok(result)
 }
 
-/// Compress data using the default (miniz_oxide) backend.
-/// Available regardless of feature flags for comparison/testing.
+/// Compress data using the pure-Rust miniz_oxide backend.
+/// Always available regardless of feature flags, for comparison/testing.
 pub fn deflate_compress_miniz(data: &[u8], level: u32) -> Result<Vec<u8>, String> {
-    use std::io::Write;
-    let mut encoder =
-        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(level));
-    encoder.write_all(data).map_err(|e| e.to_string())?;
-    encoder.finish().map_err(|e| e.to_string())
+    let level = level.min(10) as u8;
+    let result = miniz_oxide::deflate::compress_to_vec_zlib(data, level);
+    Ok(result)
+}
+
+/// Returns the name of the currently active deflate backend.
+pub fn deflate_backend() -> &'static str {
+    fast_deflate::active_backend()
 }
 
 #[cfg(test)]
@@ -140,10 +79,19 @@ mod tests {
 
     #[test]
     fn cross_backend_compatibility() {
-        // Compress with miniz, decompress with current backend
+        // Compress with miniz, decompress with current (possibly zlib-ng) backend
         let data: Vec<u8> = (0..500).map(|i| (i * 7 % 256) as u8).collect();
         let compressed = deflate_compress_miniz(&data, 6).unwrap();
         let decompressed = deflate_decompress(&compressed, data.len()).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn cross_backend_reverse() {
+        // Compress with current backend, decompress with miniz
+        let data: Vec<u8> = (0..500).map(|i| (i * 13 % 256) as u8).collect();
+        let compressed = deflate_compress(&data, 6).unwrap();
+        let decompressed = deflate_decompress_miniz(&compressed).unwrap();
         assert_eq!(decompressed, data);
     }
 
@@ -161,5 +109,35 @@ mod tests {
         assert!(compressed.len() < data.len()); // should actually compress
         let decompressed = deflate_decompress(&compressed, data.len()).unwrap();
         assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn backend_reports_name() {
+        let name = deflate_backend();
+        assert!(
+            ["miniz_oxide", "zlib-ng", "apple-compression"].contains(&name),
+            "unexpected backend: {name}"
+        );
+    }
+
+    #[test]
+    fn all_backends_produce_identical_output() {
+        let data: Vec<u8> = (0..10_000).map(|i| (i * 31 % 256) as u8).collect();
+
+        // Compress with current backend
+        let compressed_current = deflate_compress(&data, 6).unwrap();
+        // Compress with miniz
+        let compressed_miniz = deflate_compress_miniz(&data, 6).unwrap();
+
+        // Both should decompress to the same data (even if compressed bytes differ)
+        let dec_current = deflate_decompress(&compressed_current, data.len()).unwrap();
+        let dec_miniz = deflate_decompress_miniz(&compressed_miniz).unwrap();
+        let dec_cross = deflate_decompress_miniz(&compressed_current).unwrap();
+        let dec_cross2 = deflate_decompress(&compressed_miniz, data.len()).unwrap();
+
+        assert_eq!(dec_current, data);
+        assert_eq!(dec_miniz, data);
+        assert_eq!(dec_cross, data);
+        assert_eq!(dec_cross2, data);
     }
 }

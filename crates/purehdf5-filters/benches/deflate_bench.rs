@@ -1,4 +1,9 @@
-//! Benchmark: miniz_oxide vs libdeflater decompression.
+//! Benchmark: deflate decompression across backends.
+//!
+//! Run with different feature flags to compare:
+//!   cargo bench -p purehdf5-filters                              # miniz_oxide
+//!   cargo bench -p purehdf5-filters --features fast-deflate      # zlib-ng
+//!   cargo bench -p purehdf5-filters --features apple-compression # Apple (macOS)
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
@@ -9,7 +14,7 @@ fn generate_test_data(size: usize) -> Vec<u8> {
 fn bench_compress(c: &mut Criterion) {
     let data = generate_test_data(1_000_000);
 
-    c.bench_function("deflate_compress", |b| {
+    c.bench_function(&format!("deflate_compress ({})", purehdf5_filters::deflate_backend()), |b| {
         b.iter(|| purehdf5_filters::deflate_compress(black_box(&data), 6).unwrap())
     });
 
@@ -22,11 +27,14 @@ fn bench_decompress(c: &mut Criterion) {
     let data = generate_test_data(1_000_000);
     let compressed = purehdf5_filters::deflate_compress_miniz(&data, 6).unwrap();
 
-    c.bench_function("deflate_decompress", |b| {
-        b.iter(|| {
-            purehdf5_filters::deflate_decompress(black_box(&compressed), data.len()).unwrap()
-        })
-    });
+    c.bench_function(
+        &format!("deflate_decompress ({})", purehdf5_filters::deflate_backend()),
+        |b| {
+            b.iter(|| {
+                purehdf5_filters::deflate_decompress(black_box(&compressed), data.len()).unwrap()
+            })
+        },
+    );
 
     c.bench_function("deflate_decompress_miniz", |b| {
         b.iter(|| purehdf5_filters::deflate_decompress_miniz(black_box(&compressed)).unwrap())

@@ -32,3 +32,4 @@ harness = false
 default = ["mmap"]
 mmap = ["purehdf5-io/mmap"]
 parallel = ["purehdf5-format/parallel"]
+fast-deflate = ["purehdf5-format/fast-deflate"]
