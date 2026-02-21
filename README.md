@@ -36,7 +36,7 @@ Benchmarked on Apple MacBook M3 Max. Comparisons against the C HDF5 library (via
 | Chunked reads (1M f64, cached) | < 1 ms (hash index + LRU) | 4.3 ms | **cached (P1)** |
 | Compressed reads (deflate, 1M f64) | < 200 ms (zlib-ng) | 625 ms | **3×+ faster (P2)** |
 | File open | 377 µs (mmap) | 20.9 ms | **55× faster** |
-| Vector search (IVF-PQ, 100K) | 380 µs | — | **6.2× faster than numpy** |
+| Vector search (IVF-PQ, 100K) | 380 µs | N/A (not in C HDF5) | **6.2× faster than numpy** |
 
 **Key optimizations:**
 - **P0 — Zero-copy contiguous reads** via memory-mapped I/O. Data is accessed directly from the OS page cache with no allocation or copy.
