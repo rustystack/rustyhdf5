@@ -210,6 +210,7 @@ pub mod mmap;
 pub use mmap::{MmapReader, MmapReadWrite};
 
 pub mod prefetch;
+pub mod sweep;
 
 #[cfg(test)]
 mod tests {
