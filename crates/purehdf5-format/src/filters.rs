@@ -7,7 +7,9 @@ extern crate alloc;
 use alloc::{vec, vec::Vec};
 
 use crate::error::FormatError;
-use crate::filter_pipeline::{FilterPipeline, FILTER_DEFLATE, FILTER_FLETCHER32, FILTER_SHUFFLE};
+use crate::filter_pipeline::{
+    FilterPipeline, FILTER_DEFLATE, FILTER_FLETCHER32, FILTER_LZ4, FILTER_SHUFFLE, FILTER_ZSTD,
+};
 
 /// Apply a filter pipeline to decompress a chunk.
 /// Filters are applied in REVERSE order for decompression.
@@ -23,6 +25,8 @@ pub fn decompress_chunk(
         data = match filter.filter_id {
             FILTER_SHUFFLE => shuffle_decompress(&data, element_size as usize)?,
             FILTER_DEFLATE => deflate_decompress(&data)?,
+            FILTER_LZ4 => lz4_decompress(&data)?,
+            FILTER_ZSTD => zstd_decompress(&data)?,
             FILTER_FLETCHER32 => fletcher32_verify(&data)?,
             other => return Err(FormatError::UnsupportedFilter(other)),
         };
@@ -46,6 +50,11 @@ pub fn compress_chunk(
             FILTER_DEFLATE => {
                 let level = filter.client_data.first().copied().unwrap_or(6);
                 deflate_compress(&result, level)?
+            }
+            FILTER_LZ4 => lz4_compress(&result)?,
+            FILTER_ZSTD => {
+                let level = filter.client_data.first().copied().unwrap_or(3);
+                zstd_compress(&result, level)?
             }
             FILTER_FLETCHER32 => fletcher32_append(&result)?,
             other => return Err(FormatError::UnsupportedFilter(other)),
@@ -91,6 +100,61 @@ fn deflate_compress(data: &[u8], level: u32) -> Result<Vec<u8>, FormatError> {
 #[cfg(not(feature = "deflate"))]
 fn deflate_compress(_data: &[u8], _level: u32) -> Result<Vec<u8>, FormatError> {
     Err(FormatError::UnsupportedFilter(FILTER_DEFLATE))
+}
+
+/// Decompress LZ4 data. Format: 4 bytes LE original size + LZ4 block data.
+#[cfg(feature = "lz4")]
+fn lz4_decompress(data: &[u8]) -> Result<Vec<u8>, FormatError> {
+    if data.len() < 4 {
+        return Err(FormatError::DecompressionError("lz4: data too short".into()));
+    }
+    let orig_size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    lz4_flex::block::decompress(&data[4..], orig_size)
+        .map_err(|e| FormatError::DecompressionError(format!("lz4: {e}")))
+}
+
+#[cfg(not(feature = "lz4"))]
+fn lz4_decompress(_data: &[u8]) -> Result<Vec<u8>, FormatError> {
+    Err(FormatError::UnsupportedFilter(FILTER_LZ4))
+}
+
+/// Compress data with LZ4 block format. Format: 4 bytes LE original size + LZ4 block data.
+#[cfg(feature = "lz4")]
+fn lz4_compress(data: &[u8]) -> Result<Vec<u8>, FormatError> {
+    let compressed = lz4_flex::block::compress(data);
+    let mut result = Vec::with_capacity(4 + compressed.len());
+    result.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    result.extend_from_slice(&compressed);
+    Ok(result)
+}
+
+#[cfg(not(feature = "lz4"))]
+fn lz4_compress(_data: &[u8]) -> Result<Vec<u8>, FormatError> {
+    Err(FormatError::UnsupportedFilter(FILTER_LZ4))
+}
+
+/// Decompress zstd data.
+#[cfg(feature = "zstd")]
+fn zstd_decompress(data: &[u8]) -> Result<Vec<u8>, FormatError> {
+    zstd::decode_all(data)
+        .map_err(|e| FormatError::DecompressionError(format!("zstd: {e}")))
+}
+
+#[cfg(not(feature = "zstd"))]
+fn zstd_decompress(_data: &[u8]) -> Result<Vec<u8>, FormatError> {
+    Err(FormatError::UnsupportedFilter(FILTER_ZSTD))
+}
+
+/// Compress data with zstd.
+#[cfg(feature = "zstd")]
+fn zstd_compress(data: &[u8], level: u32) -> Result<Vec<u8>, FormatError> {
+    zstd::encode_all(data, level as i32)
+        .map_err(|e| FormatError::CompressionError(format!("zstd: {e}")))
+}
+
+#[cfg(not(feature = "zstd"))]
+fn zstd_compress(_data: &[u8], _level: u32) -> Result<Vec<u8>, FormatError> {
+    Err(FormatError::UnsupportedFilter(FILTER_ZSTD))
 }
 
 /// Unshuffle (decompress direction): reconstruct interleaved element bytes.
@@ -441,6 +505,122 @@ mod tests {
         };
         // Use realistic f64-sized data
         let data: Vec<u8> = (0..80).map(|i| (i * 3 % 256) as u8).collect();
+        let compressed = compress_chunk(&data, &pipeline, 8).unwrap();
+        let decompressed = decompress_chunk(&compressed, &pipeline, data.len(), 8).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    // --- LZ4 tests ---
+
+    #[test]
+    #[cfg(feature = "lz4")]
+    fn lz4_compress_decompress_roundtrip() {
+        let data: Vec<u8> = (0..256).map(|i| (i % 256) as u8).collect();
+        let compressed = lz4_compress(&data).unwrap();
+        let decompressed = lz4_decompress(&compressed).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    #[cfg(feature = "lz4")]
+    fn pipeline_lz4_only() {
+        let pipeline = FilterPipeline {
+            version: 2,
+            filters: vec![FilterDescription {
+                filter_id: FILTER_LZ4,
+                name: Some("lz4".into()),
+                flags: 0,
+                client_data: vec![],
+            }],
+        };
+        let data: Vec<u8> = (0..200).map(|i| (i % 256) as u8).collect();
+        let compressed = compress_chunk(&data, &pipeline, 1).unwrap();
+        let decompressed = decompress_chunk(&compressed, &pipeline, data.len(), 1).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    #[cfg(feature = "lz4")]
+    fn pipeline_shuffle_lz4() {
+        let pipeline = FilterPipeline {
+            version: 2,
+            filters: vec![
+                FilterDescription {
+                    filter_id: FILTER_SHUFFLE,
+                    name: None,
+                    flags: 0,
+                    client_data: vec![],
+                },
+                FilterDescription {
+                    filter_id: FILTER_LZ4,
+                    name: Some("lz4".into()),
+                    flags: 0,
+                    client_data: vec![],
+                },
+            ],
+        };
+        let data: Vec<u8> = (0..200).map(|i| (i % 256) as u8).collect();
+        let compressed = compress_chunk(&data, &pipeline, 8).unwrap();
+        let decompressed = decompress_chunk(&compressed, &pipeline, data.len(), 8).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    // --- Zstd tests ---
+
+    #[test]
+    #[cfg(feature = "zstd")]
+    fn zstd_compress_decompress_roundtrip() {
+        let data: Vec<u8> = (0..256).map(|i| (i % 256) as u8).collect();
+        let compressed = zstd_compress(&data, 3).unwrap();
+        let decompressed = zstd_decompress(&compressed).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    #[cfg(feature = "zstd")]
+    fn pipeline_zstd_only() {
+        let pipeline = FilterPipeline {
+            version: 2,
+            filters: vec![FilterDescription {
+                filter_id: FILTER_ZSTD,
+                name: Some("zstd".into()),
+                flags: 0,
+                client_data: vec![3],
+            }],
+        };
+        let data: Vec<u8> = (0..200).map(|i| (i % 256) as u8).collect();
+        let compressed = compress_chunk(&data, &pipeline, 1).unwrap();
+        let decompressed = decompress_chunk(&compressed, &pipeline, data.len(), 1).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    #[cfg(feature = "zstd")]
+    fn pipeline_shuffle_zstd_fletcher32() {
+        let pipeline = FilterPipeline {
+            version: 2,
+            filters: vec![
+                FilterDescription {
+                    filter_id: FILTER_SHUFFLE,
+                    name: None,
+                    flags: 0,
+                    client_data: vec![],
+                },
+                FilterDescription {
+                    filter_id: FILTER_ZSTD,
+                    name: Some("zstd".into()),
+                    flags: 0,
+                    client_data: vec![1],
+                },
+                FilterDescription {
+                    filter_id: FILTER_FLETCHER32,
+                    name: None,
+                    flags: 0,
+                    client_data: vec![],
+                },
+            ],
+        };
+        let data: Vec<u8> = (0..160).map(|i| (i % 256) as u8).collect();
         let compressed = compress_chunk(&data, &pipeline, 8).unwrap();
         let decompressed = decompress_chunk(&compressed, &pipeline, data.len(), 8).unwrap();
         assert_eq!(decompressed, data);

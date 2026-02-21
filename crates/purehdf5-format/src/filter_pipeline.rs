@@ -15,6 +15,10 @@ pub const FILTER_FLETCHER32: u16 = 3;
 pub const FILTER_SZIP: u16 = 4;
 pub const FILTER_NBIT: u16 = 5;
 pub const FILTER_SCALEOFFSET: u16 = 6;
+/// LZ4 block compression (compatible with h5py-lz4 / hdf5plugin).
+pub const FILTER_LZ4: u16 = 32004;
+/// Zstandard compression.
+pub const FILTER_ZSTD: u16 = 32015;
 
 /// Description of a single filter in a pipeline.
 #[derive(Debug, Clone, PartialEq)]

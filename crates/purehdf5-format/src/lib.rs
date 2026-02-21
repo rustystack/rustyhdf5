@@ -66,6 +66,7 @@ pub mod link_message;
 pub mod data_layout;
 pub mod data_read;
 pub mod filter_pipeline;
+pub mod ea_writer;
 pub mod extensible_array;
 pub mod fixed_array;
 pub mod filters;

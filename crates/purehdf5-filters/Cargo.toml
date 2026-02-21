@@ -11,6 +11,9 @@ categories = ["compression", "science"]
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
 libdeflater = { version = "1", optional = true }
+lz4_flex = { version = "0.11", optional = true }
+zstd = { version = "0.13", optional = true }
+rayon = { version = "1", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -19,6 +22,14 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "deflate_bench"
 harness = false
 
+[[bench]]
+name = "compression_bench"
+harness = false
+
 [features]
 default = []
 fast-deflate = ["libdeflater"]
+zlib-ng = ["flate2/zlib-ng"]
+lz4 = ["lz4_flex"]
+zstd = ["dep:zstd"]
+parallel = ["rayon"]

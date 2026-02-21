@@ -7,9 +7,11 @@ extern crate alloc;
 use alloc::{vec, vec::Vec};
 
 use crate::checksum::jenkins_lookup3;
+use crate::ea_writer;
 use crate::error::FormatError;
 use crate::filter_pipeline::{
-    FilterDescription, FilterPipeline, FILTER_DEFLATE, FILTER_FLETCHER32, FILTER_SHUFFLE,
+    FilterDescription, FilterPipeline, FILTER_DEFLATE, FILTER_FLETCHER32, FILTER_LZ4,
+    FILTER_SHUFFLE, FILTER_ZSTD,
 };
 use crate::filters::compress_chunk;
 
@@ -24,6 +26,10 @@ pub struct ChunkOptions {
     pub shuffle: bool,
     /// Whether to apply fletcher32 checksum.
     pub fletcher32: bool,
+    /// Whether to use LZ4 compression (filter ID 32004).
+    pub lz4: bool,
+    /// Zstandard compression level (1-22), None = no zstd. Filter ID 32015.
+    pub zstd_level: Option<u32>,
 }
 
 impl ChunkOptions {
@@ -33,6 +39,8 @@ impl ChunkOptions {
             || self.deflate_level.is_some()
             || self.shuffle
             || self.fletcher32
+            || self.lz4
+            || self.zstd_level.is_some()
     }
 
     /// Build a FilterPipeline from the options.
@@ -48,7 +56,22 @@ impl ChunkOptions {
             });
         }
 
-        if let Some(level) = self.deflate_level {
+        // Compression filters (mutually exclusive, priority: zstd > lz4 > deflate)
+        if let Some(level) = self.zstd_level {
+            filters.push(FilterDescription {
+                filter_id: FILTER_ZSTD,
+                name: Some("zstd".into()),
+                flags: 0,
+                client_data: vec![level],
+            });
+        } else if self.lz4 {
+            filters.push(FilterDescription {
+                filter_id: FILTER_LZ4,
+                name: Some("lz4".into()),
+                flags: 0,
+                client_data: vec![],
+            });
+        } else if let Some(level) = self.deflate_level {
             filters.push(FilterDescription {
                 filter_id: FILTER_DEFLATE,
                 name: None,
@@ -201,6 +224,43 @@ pub fn split_into_chunks(
     }
 
     result
+}
+
+/// Parallel compression threshold: use rayon when chunk count exceeds this.
+const PARALLEL_COMPRESS_THRESHOLD: usize = 4;
+
+/// Compress all chunks, using parallel compression when beneficial.
+fn compress_all_chunks(
+    chunks: &[(Vec<u64>, Vec<u8>)],
+    pipeline: &Option<FilterPipeline>,
+    element_size: u32,
+) -> Result<Vec<Vec<u8>>, FormatError> {
+    #[cfg(feature = "parallel")]
+    {
+        if let Some(ref pl) = pipeline {
+            if chunks.len() > PARALLEL_COMPRESS_THRESHOLD {
+                use rayon::prelude::*;
+                return chunks
+                    .par_iter()
+                    .map(|(_offsets, chunk_bytes)| {
+                        compress_chunk(chunk_bytes, pl, element_size)
+                    })
+                    .collect();
+            }
+        }
+    }
+
+    // Sequential fallback
+    chunks
+        .iter()
+        .map(|(_offsets, chunk_bytes)| {
+            if let Some(ref pl) = pipeline {
+                compress_chunk(chunk_bytes, pl, element_size)
+            } else {
+                Ok(chunk_bytes.clone())
+            }
+        })
+        .collect()
 }
 
 /// Build the complete chunked dataset blob (chunk data + index) and return
@@ -461,388 +521,6 @@ pub fn build_fixed_array_at(
     combined
 }
 
-/// Serialize a v4 Extensible Array layout message.
-fn serialize_v4_extensible_array(
-    chunk_dims: &[u32],
-    ea_address: u64,
-    offset_size: u8,
-    element_size: u32,
-) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.push(4); // version
-    buf.push(2); // class = chunked
-    buf.push(0x00); // flags
-
-    let ndims = chunk_dims.len() as u8 + 1;
-    buf.push(ndims);
-
-    let max_dim = chunk_dims
-        .iter()
-        .map(|&d| d as u64)
-        .chain(core::iter::once(element_size as u64))
-        .max()
-        .unwrap_or(1);
-    let dim_encoded_len: u8 = if max_dim <= 0xFF {
-        1
-    } else if max_dim <= 0xFFFF {
-        2
-    } else {
-        4
-    };
-    buf.push(dim_encoded_len);
-
-    for &d in chunk_dims {
-        match dim_encoded_len {
-            1 => buf.push(d as u8),
-            2 => buf.extend_from_slice(&(d as u16).to_le_bytes()),
-            4 => buf.extend_from_slice(&d.to_le_bytes()),
-            _ => {}
-        }
-    }
-    match dim_encoded_len {
-        1 => buf.push(element_size as u8),
-        2 => buf.extend_from_slice(&(element_size as u16).to_le_bytes()),
-        4 => buf.extend_from_slice(&element_size.to_le_bytes()),
-        _ => {}
-    }
-
-    // chunk index type = 4 (Extensible Array)
-    buf.push(4);
-
-    // EA creation parameters (must match AEHD and HDF5 C library defaults)
-    buf.push(32); // max_nelmts_bits
-    buf.push(4); // idx_blk_elmts
-    buf.push(4); // super_blk_min_data_ptrs
-    buf.push(16); // data_blk_min_elmts
-    buf.push(10); // max_dblk_page_nelmts_bits
-
-    // EA header address
-    match offset_size {
-        4 => buf.extend_from_slice(&(ea_address as u32).to_le_bytes()),
-        8 => buf.extend_from_slice(&ea_address.to_le_bytes()),
-        _ => {}
-    }
-
-    buf
-}
-
-/// Build a complete Extensible Array at a known absolute address.
-///
-/// For simplicity, we put all elements inline in the index block when the
-/// number of chunks is small (up to idx_blk_elmts), otherwise use inline +
-/// direct data blocks.
-pub fn build_extensible_array_at(
-    chunks: &[WrittenChunk],
-    offset_size: u8,
-    length_size: u8,
-    has_filters: bool,
-    ea_base_address: u64,
-) -> Vec<u8> {
-    let os = offset_size as usize;
-    let num_elements = chunks.len();
-
-    // Compute element encoding size (same logic as Fixed Array)
-    let chunk_size_bytes: usize = if has_filters {
-        let max_raw = chunks.iter().map(|c| c.raw_size).max().unwrap_or(1);
-        let log2_val = if max_raw <= 1 {
-            0
-        } else {
-            63 - max_raw.leading_zeros()
-        };
-        let len = 1 + ((log2_val + 8) / 8) as usize;
-        len.min(8)
-    } else {
-        0
-    };
-
-    let elem_size = if has_filters {
-        os + chunk_size_bytes + 4
-    } else {
-        os
-    };
-
-    let client_id: u8 = if has_filters { 1 } else { 0 };
-
-    // EA creation parameters — must match HDF5 C library defaults exactly
-    let max_nelmts_bits: u8 = 32;
-    let idx_blk_elmts: u8 = 4;
-    let min_dblk_nelmts: u8 = 16;
-    let super_blk_min_nelmts: u8 = 4;
-    let max_dblk_nelmts_bits: u8 = 10;
-
-    // EAHD size: fixed(12) + 6 stats(6*length_size) + addr(offset_size) + checksum(4)
-    let aehd_size = 4 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1
-        + 6 * length_size as usize + os + 4;
-    let aeib_address = ea_base_address + aehd_size as u64;
-
-    // Determine how many elements go inline vs data blocks
-    let n_inline = (idx_blk_elmts as usize).min(num_elements);
-    let remaining_after_inline = num_elements.saturating_sub(n_inline);
-
-    // Compute super block layout per HDF5 spec:
-    // nsblks = floor(log2((2^max_nelmts_bits - idx_blk_elmts) / data_blk_min_elmts)) + 1
-    // For each super block i:
-    //   ndblks_in_sblk = 2^floor(i/2)
-    //   dblk_nelmts = data_blk_min_elmts * 2^ceil(i/2)
-    // Super blocks 0..sup_blk_min_data_ptrs-1 have their data block addrs in EAIB directly.
-    // Super blocks sup_blk_min_data_ptrs..nsblks-1 get super block addresses.
-    let sblk_min = super_blk_min_nelmts as usize; // sup_blk_min_data_ptrs
-    // nsblks = log2(2^max_nelmts_bits / data_blk_min_elmts) + 1
-    //        = max_nelmts_bits - log2(data_blk_min_elmts) + 1
-    let log2_dblk_min = if min_dblk_nelmts <= 1 { 0 } else { (min_dblk_nelmts as u32).trailing_zeros() as usize };
-    let nsblks = (max_nelmts_bits as usize).saturating_sub(log2_dblk_min) + 1;
-
-    // Direct data block addresses (from super blocks 0..sblk_min-1)
-    let mut dblk_sizes: Vec<usize> = Vec::new();
-    for sblk_idx in 0..sblk_min.min(nsblks) {
-        let ndblks = 1usize << (sblk_idx / 2);
-        let dblk_nelmts = (min_dblk_nelmts as usize) * (1 << sblk_idx.div_ceil(2));
-        for _ in 0..ndblks {
-            dblk_sizes.push(dblk_nelmts);
-        }
-    }
-    let n_direct_dblks = dblk_sizes.len();
-
-    // Super block addresses (for super blocks sblk_min..nsblks-1)
-    let n_sblk_addrs = nsblks.saturating_sub(sblk_min);
-
-    // EAIB size: header + inline elements + direct dblk addresses + sblk addresses + checksum
-    let aeib_size = 4 + 1 + 1 + os // sig+ver+client+hdr_addr
-        + idx_blk_elmts as usize * elem_size // inline elements (always all slots)
-        + n_direct_dblks * os // direct data block addresses
-        + n_sblk_addrs * os // super block addresses
-        + 4; // checksum
-
-    // Build AEHD
-    let mut aehd = Vec::with_capacity(aehd_size);
-    aehd.extend_from_slice(b"EAHD");
-    aehd.push(0); // version
-    aehd.push(client_id);
-    aehd.push(elem_size as u8);
-    aehd.push(max_nelmts_bits);
-    aehd.push(idx_blk_elmts);
-    aehd.push(min_dblk_nelmts);
-    aehd.push(super_blk_min_nelmts);
-    aehd.push(max_dblk_nelmts_bits);
-
-    // 6 stats fields matching HDF5 C library:
-    // [0] = 0 (unknown/reserved), [1] = 0 (unknown/reserved),
-    // [2] = ndata_blks, [3] = data_blk_total_size (computed after building data blocks),
-    // [4] = nelmts, [5] = max_idx_set
-    // We'll compute ndata_blks and data_blk_size below, and fill with placeholder for now.
-    // Actually, we need to compute these before writing EAHD.
-    // Count data blocks that will have chunks:
-    let n_active_dblks: u64 = if remaining_after_inline > 0 {
-        let mut count = 0u64;
-        let mut ci = n_inline;
-        for &sz in &dblk_sizes {
-            if ci < num_elements {
-                count += 1;
-                ci += sz;
-            }
-        }
-        count
-    } else {
-        0
-    };
-    // Compute total data block size (we'll update after building, but estimate here)
-    // For now, compute the AEDB size per block: sig(4) + ver(1) + cid(1) + hdr_addr(os) + nelmts*elem_size + checksum(4)
-    let aedb_header_overhead = 4 + 1 + 1 + os + 4;
-    let data_blk_total_size: u64 = if remaining_after_inline > 0 {
-        let mut total = 0u64;
-        let mut ci = n_inline;
-        for &sz in &dblk_sizes {
-            if ci < num_elements {
-                total += (aedb_header_overhead + sz * elem_size) as u64;
-                ci += sz;
-            }
-        }
-        total
-    } else {
-        0
-    };
-    // max_idx_set: idx_blk_elmts + sum of data block sizes for active blocks
-    let max_idx_set: u64 = if remaining_after_inline > 0 {
-        let mut max_set = idx_blk_elmts as u64;
-        let mut ci = n_inline;
-        for &sz in &dblk_sizes {
-            if ci < num_elements {
-                max_set += sz as u64;
-                ci += sz;
-            }
-        }
-        max_set
-    } else {
-        idx_blk_elmts as u64
-    };
-
-    let write_length = |buf: &mut Vec<u8>, val: u64| {
-        match length_size {
-            4 => buf.extend_from_slice(&(val as u32).to_le_bytes()),
-            _ => buf.extend_from_slice(&val.to_le_bytes()),
-        }
-    };
-    let write_addr = |buf: &mut Vec<u8>, val: u64| {
-        match offset_size {
-            4 => buf.extend_from_slice(&(val as u32).to_le_bytes()),
-            _ => buf.extend_from_slice(&val.to_le_bytes()),
-        }
-    };
-
-    write_length(&mut aehd, 0); // stat[0]: reserved/unknown
-    write_length(&mut aehd, 0); // stat[1]: reserved/unknown
-    write_length(&mut aehd, n_active_dblks); // stat[2]: ndata_blks
-    write_length(&mut aehd, data_blk_total_size); // stat[3]: data_blk_total_size
-    write_length(&mut aehd, num_elements as u64); // stat[4]: nelmts
-    write_length(&mut aehd, max_idx_set); // stat[5]: max_idx_set
-
-    write_addr(&mut aehd, aeib_address);
-
-    let aehd_checksum = jenkins_lookup3(&aehd);
-    aehd.extend_from_slice(&aehd_checksum.to_le_bytes());
-    debug_assert_eq!(aehd.len(), aehd_size);
-
-    // Build AEIB
-    let mut aeib = Vec::with_capacity(aeib_size);
-    aeib.extend_from_slice(b"EAIB");
-    aeib.push(0); // version
-    aeib.push(client_id);
-
-    // header address
-    match offset_size {
-        4 => aeib.extend_from_slice(&(ea_base_address as u32).to_le_bytes()),
-        8 => aeib.extend_from_slice(&ea_base_address.to_le_bytes()),
-        _ => aeib.extend_from_slice(&ea_base_address.to_le_bytes()),
-    }
-
-    // Inline elements (always write idx_blk_elmts slots, fill unused with undefined)
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..idx_blk_elmts as usize {
-        if i < n_inline {
-            write_chunk_element(&mut aeib, &chunks[i], offset_size, has_filters, chunk_size_bytes);
-        } else {
-            write_undefined_element(&mut aeib, offset_size, has_filters, chunk_size_bytes);
-        }
-    }
-
-    // Data block addresses + build data blocks
-    let mut data_blocks_buf = Vec::new();
-    let dblks_base = aeib_address + aeib_size as u64;
-    let mut dblk_cursor = dblks_base;
-    let mut chunk_idx = n_inline;
-
-    for &nelmts in &dblk_sizes {
-        if chunk_idx >= num_elements {
-            // No more chunks — write undefined address
-            match offset_size {
-                4 => aeib.extend_from_slice(&u32::MAX.to_le_bytes()),
-                8 => aeib.extend_from_slice(&u64::MAX.to_le_bytes()),
-                _ => aeib.extend_from_slice(&u64::MAX.to_le_bytes()),
-            }
-            continue;
-        }
-
-        // Write this data block's address
-        match offset_size {
-            4 => aeib.extend_from_slice(&(dblk_cursor as u32).to_le_bytes()),
-            8 => aeib.extend_from_slice(&dblk_cursor.to_le_bytes()),
-            _ => aeib.extend_from_slice(&dblk_cursor.to_le_bytes()),
-        }
-
-        // Build EADB
-        let mut aedb = Vec::new();
-        aedb.extend_from_slice(b"EADB");
-        aedb.push(0); // version
-        aedb.push(client_id);
-        match offset_size {
-            4 => aedb.extend_from_slice(&(ea_base_address as u32).to_le_bytes()),
-            8 => aedb.extend_from_slice(&ea_base_address.to_le_bytes()),
-            _ => aedb.extend_from_slice(&ea_base_address.to_le_bytes()),
-        }
-
-        // Block offset: encoded in ceil(max_nelmts_bits/8) bytes
-        // This is the EA-relative index of the first element in this data block
-        let blk_off_size = (max_nelmts_bits as usize).div_ceil(8);
-        let blk_off_val = (chunk_idx - n_inline) as u64;
-        aedb.extend_from_slice(&blk_off_val.to_le_bytes()[..blk_off_size]);
-
-        // Write elements (fill all nelmts slots, use undefined for empty)
-        for slot in 0..nelmts {
-            if chunk_idx + slot < num_elements {
-                write_chunk_element(
-                    &mut aedb,
-                    &chunks[chunk_idx + slot],
-                    offset_size,
-                    has_filters,
-                    chunk_size_bytes,
-                );
-            } else {
-                // Undefined slot
-                write_undefined_element(&mut aedb, offset_size, has_filters, chunk_size_bytes);
-            }
-        }
-
-        let aedb_checksum = jenkins_lookup3(&aedb);
-        aedb.extend_from_slice(&aedb_checksum.to_le_bytes());
-
-        dblk_cursor += aedb.len() as u64;
-        data_blocks_buf.extend_from_slice(&aedb);
-        chunk_idx += nelmts;
-    }
-
-    // Super block addresses (all undefined for now — we don't create super blocks)
-    for _ in 0..n_sblk_addrs {
-        match offset_size {
-            4 => aeib.extend_from_slice(&u32::MAX.to_le_bytes()),
-            8 => aeib.extend_from_slice(&u64::MAX.to_le_bytes()),
-            _ => aeib.extend_from_slice(&u64::MAX.to_le_bytes()),
-        }
-    }
-
-    // AEIB checksum
-    let aeib_checksum = jenkins_lookup3(&aeib);
-    aeib.extend_from_slice(&aeib_checksum.to_le_bytes());
-    debug_assert_eq!(aeib.len(), aeib_size);
-
-    let mut combined = aehd;
-    combined.extend_from_slice(&aeib);
-    combined.extend_from_slice(&data_blocks_buf);
-    combined
-}
-
-fn write_chunk_element(
-    buf: &mut Vec<u8>,
-    chunk: &WrittenChunk,
-    offset_size: u8,
-    has_filters: bool,
-    chunk_size_bytes: usize,
-) {
-    match offset_size {
-        4 => buf.extend_from_slice(&(chunk.address as u32).to_le_bytes()),
-        8 => buf.extend_from_slice(&chunk.address.to_le_bytes()),
-        _ => buf.extend_from_slice(&chunk.address.to_le_bytes()),
-    }
-    if has_filters {
-        let cs_bytes = chunk.compressed_size.to_le_bytes();
-        buf.extend_from_slice(&cs_bytes[..chunk_size_bytes]);
-        buf.extend_from_slice(&chunk.filter_mask.to_le_bytes());
-    }
-}
-
-fn write_undefined_element(
-    buf: &mut Vec<u8>,
-    offset_size: u8,
-    has_filters: bool,
-    chunk_size_bytes: usize,
-) {
-    let os = offset_size as usize;
-    buf.extend_from_slice(&vec![0xFF; os]);
-    if has_filters {
-        buf.extend_from_slice(&vec![0x00; chunk_size_bytes]);
-        buf.extend_from_slice(&0u32.to_le_bytes());
-    }
-}
-
 /// Build chunked data with absolute addresses.
 /// If `maxshape` has unlimited dims, uses Extensible Array index.
 pub fn build_chunked_data_at(
@@ -872,17 +550,13 @@ pub fn build_chunked_data_at_ext(
     let num_chunks = chunks.len();
     let has_filters = pipeline.is_some();
 
-    // Compress each chunk
+    // Compress each chunk (parallel when rayon available and chunk count > 4)
+    let compressed_chunks = compress_all_chunks(&chunks, &pipeline, element_size as u32)?;
+
     let mut data_buf = Vec::new();
     let mut written_chunks = Vec::with_capacity(num_chunks);
 
-    for (_offsets, chunk_bytes) in &chunks {
-        let compressed = if let Some(ref pl) = pipeline {
-            compress_chunk(chunk_bytes, pl, element_size as u32)?
-        } else {
-            chunk_bytes.clone()
-        };
-
+    for ((_offsets, chunk_bytes), compressed) in chunks.iter().zip(compressed_chunks) {
         let address = base_address + data_buf.len() as u64;
         let compressed_size = compressed.len() as u64;
         let raw_size = chunk_bytes.len() as u64;
@@ -907,7 +581,7 @@ pub fn build_chunked_data_at_ext(
     let layout_message = if use_extensible {
         let ea_address = base_address + data_buf.len() as u64;
 
-        let ea_bytes = build_extensible_array_at(
+        let ea_bytes = ea_writer::build_extensible_array_at(
             &written_chunks,
             offset_size,
             length_size,
@@ -916,7 +590,7 @@ pub fn build_chunked_data_at_ext(
         );
         data_buf.extend_from_slice(&ea_bytes);
 
-        serialize_v4_extensible_array(
+        ea_writer::serialize_v4_extensible_array(
             &chunk_dims_u32,
             ea_address,
             offset_size,
@@ -1190,6 +864,41 @@ mod tests {
     }
 
     #[test]
+    fn chunk_options_pipeline_lz4() {
+        let options = ChunkOptions {
+            lz4: true,
+            ..Default::default()
+        };
+        let pl = options.build_pipeline(8).unwrap();
+        assert_eq!(pl.filters.len(), 1);
+        assert_eq!(pl.filters[0].filter_id, FILTER_LZ4);
+    }
+
+    #[test]
+    fn chunk_options_pipeline_zstd() {
+        let options = ChunkOptions {
+            zstd_level: Some(3),
+            ..Default::default()
+        };
+        let pl = options.build_pipeline(8).unwrap();
+        assert_eq!(pl.filters.len(), 1);
+        assert_eq!(pl.filters[0].filter_id, FILTER_ZSTD);
+        assert_eq!(pl.filters[0].client_data, vec![3]);
+    }
+
+    #[test]
+    fn chunk_options_zstd_priority_over_deflate() {
+        let options = ChunkOptions {
+            deflate_level: Some(6),
+            zstd_level: Some(3),
+            ..Default::default()
+        };
+        let pl = options.build_pipeline(8).unwrap();
+        assert_eq!(pl.filters.len(), 1);
+        assert_eq!(pl.filters[0].filter_id, FILTER_ZSTD);
+    }
+
+    #[test]
     fn chunk_options_pipeline_shuffle_deflate_fletcher32() {
         let options = ChunkOptions {
             deflate_level: Some(6),
@@ -1296,7 +1005,7 @@ mod tests {
 
     #[test]
     fn serialize_v4_extensible_array_roundtrip() {
-        let msg = serialize_v4_extensible_array(&[10], 0x4000, 8, 8);
+        let msg = ea_writer::serialize_v4_extensible_array(&[10], 0x4000, 8, 8);
         let layout = DataLayout::parse(&msg, 8, 8).unwrap();
         match layout {
             DataLayout::Chunked {
@@ -1331,7 +1040,7 @@ mod tests {
                 filter_mask: 0,
             },
         ];
-        let ea = build_extensible_array_at(&chunks, 8, 8, false, 0x2000);
+        let ea = ea_writer::build_extensible_array_at(&chunks, 8, 8, false, 0x2000);
         assert_eq!(&ea[0..4], b"EAHD");
         // Find EAIB after EAHD: 12 fixed + 6*8 stats + 8 addr + 4 checksum = 72
         let aehd_size = 4 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 6 * 8 + 8 + 4;
@@ -1455,5 +1164,75 @@ mod tests {
         let values: Vec<f64> = serde_json::from_value(v["values"].clone()).unwrap();
         assert_eq!(values, data);
         assert_eq!(v["units"], serde_json::json!("meters"));
+    }
+
+    // --- LZ4 chunked roundtrip tests ---
+
+    #[cfg(feature = "lz4")]
+    #[test]
+    fn roundtrip_1d_single_chunk_lz4() {
+        let values: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let options = ChunkOptions {
+            chunk_dims: Some(vec![100]),
+            lz4: true,
+            ..Default::default()
+        };
+        let result = roundtrip_chunked(&values, &[100], &[100], &options);
+        assert_eq!(result, values);
+    }
+
+    #[cfg(feature = "lz4")]
+    #[test]
+    fn roundtrip_1d_multi_chunk_lz4() {
+        let values: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let options = ChunkOptions {
+            chunk_dims: Some(vec![20]),
+            lz4: true,
+            ..Default::default()
+        };
+        let result = roundtrip_chunked(&values, &[100], &[20], &options);
+        assert_eq!(result, values);
+    }
+
+    // --- Zstd chunked roundtrip tests ---
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn roundtrip_1d_single_chunk_zstd() {
+        let values: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let options = ChunkOptions {
+            chunk_dims: Some(vec![100]),
+            zstd_level: Some(3),
+            ..Default::default()
+        };
+        let result = roundtrip_chunked(&values, &[100], &[100], &options);
+        assert_eq!(result, values);
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn roundtrip_1d_multi_chunk_zstd() {
+        let values: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let options = ChunkOptions {
+            chunk_dims: Some(vec![20]),
+            zstd_level: Some(1),
+            ..Default::default()
+        };
+        let result = roundtrip_chunked(&values, &[100], &[20], &options);
+        assert_eq!(result, values);
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn roundtrip_1d_shuffle_zstd() {
+        let values: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let options = ChunkOptions {
+            chunk_dims: Some(vec![50]),
+            zstd_level: Some(3),
+            shuffle: true,
+            ..Default::default()
+        };
+        let result = roundtrip_chunked(&values, &[100], &[50], &options);
+        assert_eq!(result, values);
     }
 }
