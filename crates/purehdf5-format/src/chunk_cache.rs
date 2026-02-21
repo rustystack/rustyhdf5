@@ -20,6 +20,7 @@ use std::collections::HashMap;
 #[cfg(not(feature = "std"))]
 use alloc::collections::BTreeMap;
 
+use crate::chunk_index::{ChunkIndex, ChunkLayout};
 use crate::chunked_read::ChunkInfo;
 
 // ---------------------------------------------------------------------------
@@ -245,6 +246,12 @@ struct CacheInner {
     #[cfg(not(feature = "std"))]
     index: Option<BTreeMap<ChunkCoord, ChunkInfo>>,
 
+    /// Chunk B-tree index cache — O(1) lookup by coordinate.
+    chunk_index: Option<ChunkIndex>,
+
+    /// Pre-computed chunk layout — row-copy plan for fast assembly.
+    chunk_layout: Option<ChunkLayout>,
+
     /// LRU cache of decompressed chunk data.
     slots: Vec<CachedChunk>,
 
@@ -292,6 +299,8 @@ impl ChunkCache {
         Self {
             inner: RefCell::new(CacheInner {
                 index: None,
+                chunk_index: None,
+                chunk_layout: None,
                 slots: Vec::with_capacity(max_slots.min(64)),
                 current_bytes: 0,
                 max_bytes,
@@ -341,6 +350,65 @@ impl ChunkCache {
     pub fn all_indexed_chunks(&self) -> Option<Vec<ChunkInfo>> {
         let inner = self.inner.borrow();
         inner.index.as_ref().map(|m| m.values().cloned().collect())
+    }
+
+    // ----- Chunk index (B-tree cache) -----
+
+    /// Returns `true` if the chunk B-tree index has been built.
+    pub fn has_chunk_index(&self) -> bool {
+        self.inner.borrow().chunk_index.is_some()
+    }
+
+    /// Build and store the chunk B-tree index from a pre-collected list of `ChunkInfo`.
+    pub fn populate_chunk_index(&self, chunks: &[ChunkInfo], rank: usize) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.chunk_index.is_some() {
+            return;
+        }
+        inner.chunk_index = Some(ChunkIndex::build(chunks, rank));
+    }
+
+    /// Get a reference to the cached chunk index.
+    pub fn chunk_index(&self) -> Option<core::cell::Ref<'_, ChunkIndex>> {
+        let inner = self.inner.borrow();
+        if inner.chunk_index.is_some() {
+            Some(core::cell::Ref::map(inner, |i| i.chunk_index.as_ref().unwrap()))
+        } else {
+            None
+        }
+    }
+
+    // ----- Chunk layout (pre-computed assembly plan) -----
+
+    /// Returns `true` if the chunk layout has been computed.
+    pub fn has_chunk_layout(&self) -> bool {
+        self.inner.borrow().chunk_layout.is_some()
+    }
+
+    /// Build and store the pre-computed chunk layout for fast assembly.
+    pub fn populate_chunk_layout(
+        &self,
+        ds_dims: &[usize],
+        chunk_dims: &[usize],
+        elem_size: usize,
+    ) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.chunk_layout.is_some() {
+            return;
+        }
+        if let Some(ref idx) = inner.chunk_index {
+            inner.chunk_layout = Some(ChunkLayout::build(idx, ds_dims, chunk_dims, elem_size));
+        }
+    }
+
+    /// Get a reference to the cached chunk layout.
+    pub fn chunk_layout(&self) -> Option<core::cell::Ref<'_, ChunkLayout>> {
+        let inner = self.inner.borrow();
+        if inner.chunk_layout.is_some() {
+            Some(core::cell::Ref::map(inner, |i| i.chunk_layout.as_ref().unwrap()))
+        } else {
+            None
+        }
     }
 
     // ----- Decompressed data cache (LRU) -----
@@ -448,6 +516,8 @@ impl ChunkCache {
     pub fn clear(&self) {
         let mut inner = self.inner.borrow_mut();
         inner.index = None;
+        inner.chunk_index = None;
+        inner.chunk_layout = None;
         inner.slots.clear();
         inner.current_bytes = 0;
         inner.tick = 0;

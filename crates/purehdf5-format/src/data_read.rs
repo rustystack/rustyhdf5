@@ -7,7 +7,7 @@ use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
 use std::collections::BTreeMap;
 
 use crate::chunk_cache::ChunkCache;
-use crate::chunked_read::{read_chunked_data, read_chunked_data_cached};
+use crate::chunked_read::{read_chunked_data, read_chunked_data_cached, read_chunked_data_indexed};
 use crate::data_layout::DataLayout;
 use crate::dataspace::Dataspace;
 use crate::datatype::{Datatype, DatatypeByteOrder};
@@ -133,6 +133,36 @@ pub fn read_raw_data_cached(
     match layout {
         DataLayout::Chunked { .. } => {
             read_chunked_data_cached(
+                file_data, layout, dataspace, datatype, pipeline,
+                offset_size, length_size, cache,
+            )
+        }
+        _ => read_raw_data_full(
+            file_data, layout, dataspace, datatype, pipeline,
+            offset_size, length_size,
+        ),
+    }
+}
+
+/// Read raw bytes with chunk B-tree index cache and pre-computed layout.
+///
+/// For chunked layouts this uses the optimized `read_chunked_data_indexed` path
+/// which pre-computes contiguous row-copy operations, eliminating per-element
+/// N-D coordinate math on repeated reads.  For compact and contiguous layouts
+/// this behaves identically to [`read_raw_data_full`].
+pub fn read_raw_data_indexed(
+    file_data: &[u8],
+    layout: &DataLayout,
+    dataspace: &Dataspace,
+    datatype: &Datatype,
+    pipeline: Option<&FilterPipeline>,
+    offset_size: u8,
+    length_size: u8,
+    cache: &ChunkCache,
+) -> Result<Vec<u8>, FormatError> {
+    match layout {
+        DataLayout::Chunked { .. } => {
+            read_chunked_data_indexed(
                 file_data, layout, dataspace, datatype, pipeline,
                 offset_size, length_size, cache,
             )
