@@ -12,6 +12,7 @@ readme = "../../README.md"
 [dependencies]
 purehdf5-format = { path = "../purehdf5-format" }
 purehdf5-io = { path = "../purehdf5-io" }
+rayon = { version = "1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -31,5 +32,5 @@ harness = false
 [features]
 default = ["mmap"]
 mmap = ["purehdf5-io/mmap"]
-parallel = ["purehdf5-format/parallel"]
+parallel = ["purehdf5-format/parallel", "rayon"]
 fast-deflate = ["purehdf5-format/fast-deflate"]

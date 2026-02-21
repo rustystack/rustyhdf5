@@ -54,6 +54,7 @@ pub mod chunk_cache;
 pub mod chunked_read;
 pub mod chunked_write;
 pub mod file_writer;
+pub mod metadata_index;
 pub mod object_header_writer;
 pub mod type_builders;
 pub mod btree_v1;
