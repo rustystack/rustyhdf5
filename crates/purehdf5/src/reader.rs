@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use purehdf5_format::attribute::extract_attributes_full;
+use purehdf5_format::chunk_cache::ChunkCache;
 use purehdf5_format::data_layout::DataLayout;
 use purehdf5_format::data_read;
 use purehdf5_format::dataspace::Dataspace;
@@ -63,6 +64,8 @@ impl FileData {
 pub struct File {
     data: FileData,
     superblock: Superblock,
+    /// Per-file chunk cache shared across all dataset reads.
+    chunk_cache: ChunkCache,
 }
 
 impl File {
@@ -80,6 +83,7 @@ impl File {
             Ok(Self {
                 data: FileData::Mmap(reader),
                 superblock,
+                chunk_cache: ChunkCache::new(),
             })
         }
         #[cfg(not(feature = "mmap"))]
@@ -105,6 +109,7 @@ impl File {
         Ok(Self {
             data: FileData::Owned(data),
             superblock,
+            chunk_cache: ChunkCache::new(),
         })
     }
 
@@ -464,7 +469,7 @@ impl<'f> Dataset<'f> {
         let ds = self.dataspace()?;
         let dl = self.data_layout()?;
         let pipeline = self.filter_pipeline();
-        Ok(data_read::read_raw_data_full(
+        Ok(data_read::read_raw_data_cached(
             self.file.data.as_bytes(),
             &dl,
             &ds,
@@ -472,6 +477,7 @@ impl<'f> Dataset<'f> {
             pipeline.as_ref(),
             self.file.offset_size(),
             self.file.length_size(),
+            &self.file.chunk_cache,
         )?)
     }
 }

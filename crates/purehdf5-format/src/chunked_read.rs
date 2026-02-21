@@ -6,6 +6,7 @@ extern crate alloc;
 #[cfg(not(feature = "std"))]
 use alloc::{format, vec, vec::Vec};
 
+use crate::chunk_cache::ChunkCache;
 use crate::data_layout::DataLayout;
 use crate::dataspace::Dataspace;
 use crate::datatype::Datatype;
@@ -411,6 +412,184 @@ pub fn read_chunked_data(
         } else {
             copy_chunk_to_output(
                 decompressed,
+                &mut output,
+                &chunk_offsets,
+                &chunk_dims,
+                &ds_dims,
+                &ds_strides,
+                &chunk_strides,
+                elem_size,
+                rank,
+            );
+        }
+    }
+
+    Ok(output)
+}
+
+/// Read a chunked dataset with caching support.
+///
+/// On the first call, scans the chunk index (B-tree / fixed array / etc.) once
+/// and populates the cache's hash index.  Subsequent calls skip the index scan
+/// entirely.  Decompressed chunk data is also cached with LRU eviction.
+pub fn read_chunked_data_cached(
+    file_data: &[u8],
+    layout: &DataLayout,
+    dataspace: &Dataspace,
+    datatype: &Datatype,
+    pipeline: Option<&FilterPipeline>,
+    offset_size: u8,
+    length_size: u8,
+    cache: &ChunkCache,
+) -> Result<Vec<u8>, FormatError> {
+    let (chunk_dimensions, version, chunk_index_type, addr_opt,
+         single_filtered_size, single_filter_mask) = match layout {
+        DataLayout::Chunked {
+            chunk_dimensions,
+            btree_address,
+            version,
+            chunk_index_type,
+            single_chunk_filtered_size,
+            single_chunk_filter_mask,
+        } => (chunk_dimensions, *version, *chunk_index_type, *btree_address,
+              *single_chunk_filtered_size, *single_chunk_filter_mask),
+        _ => {
+            return Err(FormatError::ChunkedReadError(
+                "expected chunked layout".into(),
+            ))
+        }
+    };
+
+    let addr = addr_opt.ok_or_else(|| {
+        FormatError::ChunkedReadError("no address for chunked layout".into())
+    })?;
+
+    let elem_size = datatype.type_size() as usize;
+    let ndims = chunk_dimensions.len();
+    let rank = ndims - 1;
+    let chunk_dims: Vec<usize> = chunk_dimensions[..rank]
+        .iter()
+        .map(|&d| d as usize)
+        .collect();
+
+    let ds_dims: Vec<usize> = dataspace.dimensions.iter().map(|&d| d as usize).collect();
+    if ds_dims.len() != rank {
+        return Err(FormatError::ChunkedReadError(format!(
+            "rank mismatch: dataspace has {} dims, layout has {} chunk dims (rank={})",
+            ds_dims.len(), chunk_dimensions.len(), rank
+        )));
+    }
+
+    // Populate chunk index on first access
+    if !cache.has_index() {
+        let chunks = match (version, chunk_index_type) {
+            (3, _) => {
+                collect_chunk_info(file_data, addr, ndims, offset_size, length_size)?
+            }
+            (4, Some(1)) => {
+                let chunk_byte_size: usize = chunk_dims.iter().product::<usize>() * elem_size;
+                let (csize, fmask) = if let Some(fs) = single_filtered_size {
+                    (fs as u32, single_filter_mask.unwrap_or(0))
+                } else {
+                    (chunk_byte_size as u32, 0)
+                };
+                vec![ChunkInfo {
+                    chunk_size: csize,
+                    filter_mask: fmask,
+                    offsets: vec![0u64; rank],
+                    address: addr,
+                }]
+            }
+            (4, Some(2)) => {
+                let spatial_chunk_dims: Vec<u32> = chunk_dimensions[..rank].to_vec();
+                generate_implicit_chunks(addr, &dataspace.dimensions, &spatial_chunk_dims, elem_size as u32)
+            }
+            (4, Some(3)) => {
+                let spatial_chunk_dims: Vec<u32> = chunk_dimensions[..rank].to_vec();
+                let header = FixedArrayHeader::parse(file_data, addr as usize, offset_size, length_size)?;
+                read_fixed_array_chunks(
+                    file_data, &header, &dataspace.dimensions, &spatial_chunk_dims,
+                    elem_size as u32, offset_size, length_size,
+                )?
+            }
+            (4, Some(4)) => {
+                let spatial_chunk_dims: Vec<u32> = chunk_dimensions[..rank].to_vec();
+                let header = ExtensibleArrayHeader::parse(file_data, addr as usize, offset_size, length_size)?;
+                read_extensible_array_chunks(
+                    file_data, &header, &dataspace.dimensions, &spatial_chunk_dims,
+                    elem_size as u32, offset_size, length_size,
+                )?
+            }
+            (v, idx) => {
+                return Err(FormatError::ChunkedReadError(format!(
+                    "unsupported chunked layout version={v}, index_type={idx:?}"
+                )))
+            }
+        };
+        cache.populate_index(&chunks, rank);
+    }
+
+    let chunks = cache.all_indexed_chunks().unwrap_or_default();
+
+    // Assemble output
+    let total_elements = dataspace.num_elements() as usize;
+    let total_bytes = total_elements * elem_size;
+    let mut output = vec![0u8; total_bytes];
+
+    let mut ds_strides = vec![1usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        ds_strides[i] = ds_strides[i + 1] * ds_dims[i + 1];
+    }
+
+    let mut chunk_strides = vec![1usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        chunk_strides[i] = chunk_strides[i + 1] * chunk_dims[i + 1];
+    }
+
+    let chunk_total_elements: usize = chunk_dims.iter().product();
+    let chunk_total_bytes = chunk_total_elements * elem_size;
+
+    for chunk_info in &chunks {
+        let coord: Vec<u64> = chunk_info.offsets.iter().take(rank).copied().collect();
+
+        // Try decompressed cache first
+        let decompressed = if let Some(cached) = cache.get_decompressed(&coord) {
+            cached
+        } else {
+            // Decompress from file
+            let c_addr = chunk_info.address as usize;
+            let size = chunk_info.chunk_size as usize;
+            if c_addr + size > file_data.len() {
+                return Err(FormatError::UnexpectedEof {
+                    expected: c_addr + size,
+                    available: file_data.len(),
+                });
+            }
+            let raw_chunk = &file_data[c_addr..c_addr + size];
+            let dec = if let Some(pl) = pipeline {
+                if chunk_info.filter_mask == 0 {
+                    decompress_chunk(raw_chunk, pl, chunk_total_bytes, elem_size as u32)?
+                } else {
+                    raw_chunk.to_vec()
+                }
+            } else {
+                raw_chunk.to_vec()
+            };
+            cache.put_decompressed(coord, dec.clone());
+            dec
+        };
+
+        let chunk_offsets: Vec<usize> = chunk_info.offsets.iter()
+            .take(rank)
+            .map(|&o| o as usize)
+            .collect();
+
+        if rank == 0 {
+            let copy_len = decompressed.len().min(output.len());
+            output[..copy_len].copy_from_slice(&decompressed[..copy_len]);
+        } else {
+            copy_chunk_to_output(
+                &decompressed,
                 &mut output,
                 &chunk_offsets,
                 &chunk_dims,
@@ -1021,6 +1200,67 @@ mod tests {
         for i in 0..3 {
             let val = f64::from_le_bytes(raw[i * 8..(i + 1) * 8].try_into().unwrap());
             assert_eq!(val, values[i]);
+        }
+    }
+
+    // --- Cached read tests ---
+
+    use crate::chunk_cache::ChunkCache;
+
+    #[test]
+    fn cached_read_populates_index_and_returns_correct_data() {
+        let values: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        let (file_data, layout, dataspace) = build_1d_chunked_file(&values, 10);
+        let datatype = make_f64_type();
+        let cache = ChunkCache::new();
+
+        assert!(!cache.has_index());
+        let raw = read_chunked_data_cached(
+            &file_data, &layout, &dataspace, &datatype, None, 8, 8, &cache,
+        ).unwrap();
+        assert!(cache.has_index());
+        assert_eq!(raw.len(), 20 * 8);
+        for i in 0..20 {
+            let val = f64::from_le_bytes(raw[i * 8..(i + 1) * 8].try_into().unwrap());
+            assert_eq!(val, i as f64);
+        }
+    }
+
+    #[test]
+    fn cached_read_second_call_uses_cache() {
+        let values: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        let (file_data, layout, dataspace) = build_1d_chunked_file(&values, 10);
+        let datatype = make_f64_type();
+        let cache = ChunkCache::new();
+
+        // First read — populates index + decompressed cache
+        let raw1 = read_chunked_data_cached(
+            &file_data, &layout, &dataspace, &datatype, None, 8, 8, &cache,
+        ).unwrap();
+        assert!(cache.has_index());
+        assert!(cache.cached_chunk_count() > 0);
+
+        // Second read — should hit the decompressed cache
+        let raw2 = read_chunked_data_cached(
+            &file_data, &layout, &dataspace, &datatype, None, 8, 8, &cache,
+        ).unwrap();
+        assert_eq!(raw1, raw2);
+    }
+
+    #[test]
+    fn cached_read_with_partial_last_chunk() {
+        let values: Vec<f64> = (0..25).map(|i| i as f64).collect();
+        let (file_data, layout, dataspace) = build_1d_chunked_file(&values, 10);
+        let datatype = make_f64_type();
+        let cache = ChunkCache::new();
+
+        let raw = read_chunked_data_cached(
+            &file_data, &layout, &dataspace, &datatype, None, 8, 8, &cache,
+        ).unwrap();
+        assert_eq!(raw.len(), 25 * 8);
+        for i in 0..25 {
+            let val = f64::from_le_bytes(raw[i * 8..(i + 1) * 8].try_into().unwrap());
+            assert_eq!(val, i as f64, "mismatch at index {i}");
         }
     }
 }
