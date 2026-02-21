@@ -1,0 +1,304 @@
+    Finished `bench` profile [optimized] target(s) in 0.08s
+     Running benches/bench.rs (target/release/deps/bench-674f8732934d3a3b)
+Gnuplot not found, using plotters backend
+Benchmarking write_1M_f64_contiguous
+Benchmarking write_1M_f64_contiguous: Warming up for 1.0000 s
+Benchmarking write_1M_f64_contiguous: Collecting 10 samples in estimated 5.0279 s (6105 iterations)
+Benchmarking write_1M_f64_contiguous: Analyzing
+write_1M_f64_contiguous time:   [806.86 µs 819.38 µs 835.77 µs]
+                        change: [+1.3311% +2.8072% +4.1620%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking write_1M_f64_chunked
+Benchmarking write_1M_f64_chunked: Warming up for 1.0000 s
+Benchmarking write_1M_f64_chunked: Collecting 10 samples in estimated 5.3600 s (715 iterations)
+Benchmarking write_1M_f64_chunked: Analyzing
+write_1M_f64_chunked    time:   [7.2353 ms 7.3207 ms 7.3792 ms]
+                        change: [-8.3008% -7.5178% -6.6987%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking write_1M_f64_chunked_deflate
+Benchmarking write_1M_f64_chunked_deflate: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 5.9s.
+Benchmarking write_1M_f64_chunked_deflate: Collecting 10 samples in estimated 5.9085 s (10 iterations)
+Benchmarking write_1M_f64_chunked_deflate: Analyzing
+write_1M_f64_chunked_deflate
+                        time:   [574.03 ms 576.62 ms 578.88 ms]
+                        change: [-8.1729% -7.6500% -7.1895%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking read_1M_f64_contiguous
+Benchmarking read_1M_f64_contiguous: Warming up for 1.0000 s
+Benchmarking read_1M_f64_contiguous: Collecting 10 samples in estimated 5.0814 s (3410 iterations)
+Benchmarking read_1M_f64_contiguous: Analyzing
+read_1M_f64_contiguous  time:   [1.4859 ms 1.4886 ms 1.4928 ms]
+                        change: [-14.877% -14.082% -13.180%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+
+Benchmarking read_1M_f64_chunked
+Benchmarking read_1M_f64_chunked: Warming up for 1.0000 s
+Benchmarking read_1M_f64_chunked: Collecting 10 samples in estimated 5.1974 s (1155 iterations)
+Benchmarking read_1M_f64_chunked: Analyzing
+read_1M_f64_chunked     time:   [4.4691 ms 4.4758 ms 4.4808 ms]
+                        change: [-11.327% -10.034% -9.1658%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking read_1M_f64_chunked_deflate
+Benchmarking read_1M_f64_chunked_deflate: Warming up for 1.0000 s
+Benchmarking read_1M_f64_chunked_deflate: Collecting 10 samples in estimated 5.2483 s (825 iterations)
+Benchmarking read_1M_f64_chunked_deflate: Analyzing
+read_1M_f64_chunked_deflate
+                        time:   [6.4950 ms 6.6085 ms 6.7681 ms]
+                        change: [-11.757% -10.029% -8.1712%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking roundtrip_1M_f64_contiguous
+Benchmarking roundtrip_1M_f64_contiguous: Warming up for 1.0000 s
+Benchmarking roundtrip_1M_f64_contiguous: Collecting 10 samples in estimated 5.0310 s (2090 iterations)
+Benchmarking roundtrip_1M_f64_contiguous: Analyzing
+roundtrip_1M_f64_contiguous
+                        time:   [2.3619 ms 2.4125 ms 2.4575 ms]
+                        change: [-14.803% -13.191% -11.812%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking roundtrip_1M_f64_chunked_deflate
+Benchmarking roundtrip_1M_f64_chunked_deflate: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 6.2s.
+Benchmarking roundtrip_1M_f64_chunked_deflate: Collecting 10 samples in estimated 6.1510 s (10 iterations)
+Benchmarking roundtrip_1M_f64_chunked_deflate: Analyzing
+roundtrip_1M_f64_chunked_deflate
+                        time:   [605.08 ms 609.48 ms 613.96 ms]
+                        change: [-8.4441% -7.5655% -6.7291%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking write_dataset_20_attrs_dense
+Benchmarking write_dataset_20_attrs_dense: Warming up for 1.0000 s
+Benchmarking write_dataset_20_attrs_dense: Collecting 10 samples in estimated 5.0003 s (302k iterations)
+Benchmarking write_dataset_20_attrs_dense: Analyzing
+write_dataset_20_attrs_dense
+                        time:   [16.054 µs 16.119 µs 16.228 µs]
+                        change: [-7.9786% -7.2483% -6.4918%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking read_dataset_20_attrs_dense
+Benchmarking read_dataset_20_attrs_dense: Warming up for 1.0000 s
+Benchmarking read_dataset_20_attrs_dense: Collecting 10 samples in estimated 5.0001 s (1.8M iterations)
+Benchmarking read_dataset_20_attrs_dense: Analyzing
+read_dataset_20_attrs_dense
+                        time:   [2.8051 µs 2.8502 µs 2.9146 µs]
+                        change: [-8.0247% -6.8301% -5.3564%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+
+Benchmarking write_dataset_50_attrs
+Benchmarking write_dataset_50_attrs: Warming up for 1.0000 s
+Benchmarking write_dataset_50_attrs: Collecting 10 samples in estimated 5.0020 s (135k iterations)
+Benchmarking write_dataset_50_attrs: Analyzing
+write_dataset_50_attrs  time:   [36.843 µs 37.159 µs 37.768 µs]
+                        change: [-9.5572% -8.6108% -7.4187%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking read_dataset_50_attrs
+Benchmarking read_dataset_50_attrs: Warming up for 1.0000 s
+Benchmarking read_dataset_50_attrs: Collecting 10 samples in estimated 5.0002 s (859k iterations)
+Benchmarking read_dataset_50_attrs: Analyzing
+read_dataset_50_attrs   time:   [5.8460 µs 5.9042 µs 5.9453 µs]
+                        change: [-8.9930% -8.1932% -7.4139%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking parse_object_header_complex
+Benchmarking parse_object_header_complex: Warming up for 1.0000 s
+Benchmarking parse_object_header_complex: Collecting 10 samples in estimated 5.0000 s (23M iterations)
+Benchmarking parse_object_header_complex: Analyzing
+parse_object_header_complex
+                        time:   [215.77 ns 216.44 ns 217.21 ns]
+                        change: [-6.7736% -6.2768% -5.8003%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high severe
+
+Benchmarking group_nav_100_datasets
+Benchmarking group_nav_100_datasets: Warming up for 1.0000 s
+Benchmarking group_nav_100_datasets: Collecting 10 samples in estimated 5.0003 s (750k iterations)
+Benchmarking group_nav_100_datasets: Analyzing
+group_nav_100_datasets  time:   [6.7077 µs 6.7613 µs 6.8141 µs]
+                        change: [-7.4744% -6.5113% -5.4012%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking write_10K_string_attrs
+Benchmarking write_10K_string_attrs: Warming up for 1.0000 s
+Benchmarking write_10K_string_attrs: Collecting 10 samples in estimated 5.0024 s (73k iterations)
+Benchmarking write_10K_string_attrs: Analyzing
+write_10K_string_attrs  time:   [67.806 µs 68.116 µs 68.496 µs]
+                        change: [-9.8147% -9.2574% -8.6487%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking read_100_string_attrs
+Benchmarking read_100_string_attrs: Warming up for 1.0000 s
+Benchmarking read_100_string_attrs: Collecting 10 samples in estimated 5.0003 s (424k iterations)
+Benchmarking read_100_string_attrs: Analyzing
+read_100_string_attrs   time:   [11.795 µs 11.808 µs 11.828 µs]
+                        change: [-9.2939% -8.5435% -7.7867%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking write_compound_10K_rows
+Benchmarking write_compound_10K_rows: Warming up for 1.0000 s
+Benchmarking write_compound_10K_rows: Collecting 10 samples in estimated 5.0008 s (265k iterations)
+Benchmarking write_compound_10K_rows: Analyzing
+write_compound_10K_rows time:   [18.867 µs 18.914 µs 18.965 µs]
+                        change: [-10.641% -10.010% -9.3707%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high severe
+
+Benchmarking read_compound_10K_rows
+Benchmarking read_compound_10K_rows: Warming up for 1.0000 s
+Benchmarking read_compound_10K_rows: Collecting 10 samples in estimated 5.0002 s (1.1M iterations)
+Benchmarking read_compound_10K_rows: Analyzing
+read_compound_10K_rows  time:   [4.6645 µs 4.6665 µs 4.6717 µs]
+                        change: [-9.7683% -8.8404% -7.7423%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high severe
+
+Benchmarking write_1M_f64_provenance
+Benchmarking write_1M_f64_provenance: Warming up for 1.0000 s
+Benchmarking write_1M_f64_provenance: Collecting 10 samples in estimated 5.6934 s (330 iterations)
+Benchmarking write_1M_f64_provenance: Analyzing
+write_1M_f64_provenance time:   [17.236 ms 17.252 ms 17.262 ms]
+                        change: [-9.0837% -8.6362% -8.1835%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking jenkins_lookup3_4MB
+Benchmarking jenkins_lookup3_4MB: Warming up for 1.0000 s
+Benchmarking jenkins_lookup3_4MB: Collecting 10 samples in estimated 5.0297 s (2915 iterations)
+Benchmarking jenkins_lookup3_4MB: Analyzing
+jenkins_lookup3_4MB     time:   [1.7245 ms 1.7247 ms 1.7249 ms]
+                        change: [-7.9590% -7.2205% -6.6073%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+
+Benchmarking sha256_4MB
+Benchmarking sha256_4MB: Warming up for 1.0000 s
+Benchmarking sha256_4MB: Collecting 10 samples in estimated 5.4408 s (660 iterations)
+Benchmarking sha256_4MB: Analyzing
+sha256_4MB              time:   [8.2394 ms 8.2424 ms 8.2451 ms]
+                        change: [-6.6549% -6.2509% -5.9020%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 3 outliers among 10 measurements (30.00%)
+  1 (10.00%) low severe
+  2 (20.00%) high mild
+
+Benchmarking parse_superblock
+Benchmarking parse_superblock: Warming up for 1.0000 s
+Benchmarking parse_superblock: Collecting 10 samples in estimated 5.0000 s (267M iterations)
+Benchmarking parse_superblock: Analyzing
+parse_superblock        time:   [18.731 ns 18.842 ns 18.917 ns]
+                        change: [-3.7661% -3.2893% -2.7233%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking write_1M_mixed_types
+Benchmarking write_1M_mixed_types: Warming up for 1.0000 s
+Benchmarking write_1M_mixed_types: Collecting 10 samples in estimated 5.0101 s (4125 iterations)
+Benchmarking write_1M_mixed_types: Analyzing
+write_1M_mixed_types    time:   [1.1773 ms 1.1954 ms 1.2260 ms]
+                        change: [+0.2880% +2.5540% +4.8236%] (p = 0.03 < 0.05)
+                        Change within noise threshold.
+
+     Running benches/bench.rs (target/release/deps/bench-5407938f3abc962e)
+Gnuplot not found, using plotters backend
+GPU: Apple M3 Max (Metal, IntegratedGpu, max buffer 39813 MB, max binding 4095 MB)
+Benchmarking cosine_search/cpu/1000
+Benchmarking cosine_search/cpu/1000: Warming up for 1.0000 s
+Benchmarking cosine_search/cpu/1000: Collecting 10 samples in estimated 5.0026 s (98k iterations)
+Benchmarking cosine_search/cpu/1000: Analyzing
+cosine_search/cpu/1000  time:   [50.171 µs 50.796 µs 51.219 µs]
+                        change: [-6.5444% -5.9136% -5.2230%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking cosine_search/gpu_upload/1000
+Benchmarking cosine_search/gpu_upload/1000: Warming up for 1.0000 s
+Benchmarking cosine_search/gpu_upload/1000: Collecting 10 samples in estimated 5.0025 s (80k iterations)
+Benchmarking cosine_search/gpu_upload/1000: Analyzing
+cosine_search/gpu_upload/1000
+                        time:   [77.787 µs 181.63 µs 314.81 µs]
+                        change: [-48.578% -14.675% +39.830%] (p = 0.89 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high severe
+Benchmarking cosine_search/gpu_search/1000
+Benchmarking cosine_search/gpu_search/1000: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 2522.6s.
+Benchmarking cosine_search/gpu_search/1000: Collecting 10 samples in estimated 2522.6 s (10 iterations)
+Benchmarking cosine_search/gpu_search/1000: Analyzing
+cosine_search/gpu_search/1000
+                        time:   [5.5388 ms 6.8832 ms 9.1766 ms]
+                        change: [-20.962% +9.8978% +59.259%] (p = 0.72 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+Benchmarking cosine_search/cpu/10000
+Benchmarking cosine_search/cpu/10000: Warming up for 1.0000 s
+Benchmarking cosine_search/cpu/10000: Collecting 10 samples in estimated 5.0074 s (8690 iterations)
+Benchmarking cosine_search/cpu/10000: Analyzing
+cosine_search/cpu/10000 time:   [542.22 µs 543.82 µs 544.98 µs]
+                        change: [+4.5493% +4.8547% +5.1618%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking cosine_search/gpu_upload/10000
+Benchmarking cosine_search/gpu_upload/10000: Warming up for 1.0000 s
+Benchmarking cosine_search/gpu_upload/10000: Collecting 10 samples in estimated 5.0178 s (12k iterations)
+Benchmarking cosine_search/gpu_upload/10000: Analyzing
+cosine_search/gpu_upload/10000
+                        time:   [487.10 µs 1.6612 ms 2.5087 ms]
+                        change: [-52.611% +25.155% +271.25%] (p = 0.74 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking cosine_search/gpu_search/10000
+Benchmarking cosine_search/gpu_search/10000: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 3163.5s.
+Benchmarking cosine_search/gpu_search/10000: Collecting 10 samples in estimated 3163.5 s (10 iterations)
+Benchmarking cosine_search/gpu_search/10000: Analyzing
+cosine_search/gpu_search/10000
+                        time:   [5.6134 ms 7.2797 ms 10.467 ms]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+Benchmarking cosine_search/cpu/100000
+Benchmarking cosine_search/cpu/100000: Warming up for 1.0000 s
+Benchmarking cosine_search/cpu/100000: Collecting 10 samples in estimated 5.2305 s (825 iterations)
+Benchmarking cosine_search/cpu/100000: Analyzing
+cosine_search/cpu/100000
+                        time:   [5.6444 ms 5.6664 ms 5.7297 ms]
+Benchmarking cosine_search/gpu_upload/100000
+Benchmarking cosine_search/gpu_upload/100000: Warming up for 1.0000 s
+Benchmarking cosine_search/gpu_upload/100000: Collecting 10 samples in estimated 5.1719 s (1210 iterations)
+Benchmarking cosine_search/gpu_upload/100000: Analyzing
+cosine_search/gpu_upload/100000
+                        time:   [4.2741 ms 16.168 ms 26.812 ms]
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high severe
+Benchmarking cosine_search/gpu_search/100000
+Benchmarking cosine_search/gpu_search/100000: Warming up for 1.0000 s

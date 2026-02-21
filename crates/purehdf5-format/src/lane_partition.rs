@@ -117,45 +117,16 @@ pub fn partition(
     }
 
     if mode == PartitionMode::WorkStealing {
-        // Rebalance: ideal size is base_per_lane or base_per_lane+1.
-        // Move excess items from overloaded lanes to underloaded ones.
-        let ideal_max = base_per_lane + if extra > 0 { 1 } else { 0 };
-        let ideal_min = base_per_lane;
-
-        // Collect excess items
-        let mut overflow: Vec<usize> = Vec::new();
-        for lane in &mut lanes {
-            if lane.len() > ideal_max {
-                let drain_count = lane.len() - ideal_max;
-                let start = lane.len() - drain_count;
-                overflow.extend(lane.drain(start..));
-            }
-        }
-
-        // Distribute excess to underloaded lanes — fill to ideal_min first,
-        // then top up lanes to ideal_max with remaining overflow.
-        let mut oi = 0;
-        for lane in &mut lanes {
-            while lane.len() < ideal_min && oi < overflow.len() {
-                lane.push(overflow[oi]);
-                oi += 1;
-            }
-        }
-        for lane in &mut lanes {
-            if oi >= overflow.len() {
-                break;
-            }
-            while lane.len() < ideal_max && oi < overflow.len() {
-                lane.push(overflow[oi]);
-                oi += 1;
-            }
-        }
-        // Safety: any remaining items (shouldn't happen but be safe)
-        let mut li = 0;
-        while oi < overflow.len() {
-            lanes[li % num_lanes].push(overflow[oi]);
-            oi += 1;
-            li += 1;
+        // Rebalance so that the first `extra` lanes have base_per_lane+1 items
+        // and the remaining lanes have exactly base_per_lane items.
+        // Collect all items into a flat list (preserving hash-based ordering per lane).
+        let all_items: Vec<usize> = lanes.drain(..).flat_map(|l| l.into_iter()).collect();
+        lanes.clear();
+        let mut start = 0;
+        for i in 0..num_lanes {
+            let target = if i < extra { base_per_lane + 1 } else { base_per_lane };
+            lanes.push(all_items[start..start + target].to_vec());
+            start += target;
         }
     }
 
