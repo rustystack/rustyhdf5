@@ -211,6 +211,41 @@ pub use mmap::{MmapReader, MmapReadWrite};
 
 pub mod prefetch;
 
+/// Configuration for lane-partitioned parallel decompression.
+///
+/// Controls how chunks are distributed across threads during parallel reads.
+/// The lane partitioning scheme assigns each thread a deterministic, disjoint
+/// subset of chunks — no locks or coordination needed at runtime.
+#[derive(Debug, Clone)]
+pub struct ParallelConfig {
+    /// Number of parallel lanes (threads).  `None` = auto-detect from
+    /// available CPU cores.
+    pub num_lanes: Option<usize>,
+    /// Enable work-stealing rebalancing.  When `true`, the partitioner
+    /// redistributes excess items from overloaded lanes to underloaded ones
+    /// so that no lane differs by more than 1 chunk.  Default: `true`.
+    pub work_stealing: bool,
+}
+
+impl Default for ParallelConfig {
+    fn default() -> Self {
+        Self {
+            num_lanes: None,
+            work_stealing: true,
+        }
+    }
+}
+
+impl ParallelConfig {
+    /// Create a config with explicit lane count and work-stealing on.
+    pub fn with_lanes(num_lanes: usize) -> Self {
+        Self {
+            num_lanes: Some(num_lanes),
+            work_stealing: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

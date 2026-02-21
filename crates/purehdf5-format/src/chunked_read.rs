@@ -19,8 +19,14 @@ use crate::fixed_array::{FixedArrayHeader, read_fixed_array_chunks};
 #[cfg(feature = "parallel")]
 use crate::parallel_read;
 
-/// Decompress all chunks, using parallel decompression when the `parallel`
-/// feature is enabled and the chunk count exceeds the threshold.
+#[cfg(feature = "parallel")]
+use crate::lane_partition::PartitionStats;
+
+/// Decompress all chunks, using lane-partitioned parallel decompression when
+/// the `parallel` feature is enabled and the chunk count exceeds the threshold.
+///
+/// The `seed` and `num_lanes` parameters control the lane partition.  When the
+/// `parallel` feature is off or the chunk count is small, they are ignored.
 fn decompress_all_chunks(
     file_data: &[u8],
     chunks: &[ChunkInfo],
@@ -32,13 +38,21 @@ fn decompress_all_chunks(
     {
         if let Some(pl) = pipeline {
             if parallel_read::should_use_parallel(chunks.len()) {
-                return parallel_read::decompress_chunks_parallel(
+                // Seed from the first chunk's address and count for determinism.
+                let seed = chunks.first()
+                    .map(|c| c.address)
+                    .unwrap_or(0)
+                    ^ (chunks.len() as u64);
+                let (data, _stats) = parallel_read::decompress_chunks_lane_partitioned(
                     file_data,
                     chunks,
                     pl,
                     chunk_total_bytes,
                     element_size,
-                );
+                    seed,
+                    None, // auto-detect lane count
+                )?;
+                return Ok(data);
             }
         }
     }
@@ -68,6 +82,32 @@ fn decompress_all_chunks(
         result.push(decompressed);
     }
     Ok(result)
+}
+
+/// Decompress all chunks with lane-partitioned parallelism and return
+/// per-lane diagnostics.
+///
+/// This is the stats-returning variant for callers who want to inspect
+/// the partition balance.  Only available with the `parallel` feature.
+#[cfg(feature = "parallel")]
+pub fn decompress_all_chunks_with_stats(
+    file_data: &[u8],
+    chunks: &[ChunkInfo],
+    pipeline: &FilterPipeline,
+    chunk_total_bytes: usize,
+    element_size: u32,
+    seed: u64,
+    num_lanes: Option<usize>,
+) -> Result<(Vec<Vec<u8>>, PartitionStats), FormatError> {
+    parallel_read::decompress_chunks_lane_partitioned(
+        file_data,
+        chunks,
+        pipeline,
+        chunk_total_bytes,
+        element_size,
+        seed,
+        num_lanes,
+    )
 }
 
 /// Information about a single chunk in a chunked dataset.
