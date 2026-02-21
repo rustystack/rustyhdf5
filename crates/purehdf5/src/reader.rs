@@ -322,6 +322,33 @@ impl<'f> Dataset<'f> {
         Ok(data_read::read_as_f64(&raw, &dt)?)
     }
 
+    /// Zero-copy read of contiguous native-endian `f64` data.
+    ///
+    /// Returns `Some(&[f64])` when the dataset is contiguous and stored as
+    /// little-endian `f64` with proper alignment.  Returns `None` for
+    /// chunked/compact layouts or non-native types — use [`read_f64`] instead.
+    pub fn read_f64_zerocopy(&self) -> Result<Option<&'f [f64]>, Error> {
+        let raw = match self.read_raw_ref()? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let dt = self.datatype()?;
+        Ok(data_read::read_as_f64_zerocopy(raw, &dt))
+    }
+
+    /// Zero-copy read of contiguous native-endian `f32` data.
+    ///
+    /// Returns `Some(&[f32])` when the dataset is contiguous and stored as
+    /// little-endian `f32` with proper alignment.  Returns `None` otherwise.
+    pub fn read_f32_zerocopy(&self) -> Result<Option<&'f [f32]>, Error> {
+        let raw = match self.read_raw_ref()? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let dt = self.datatype()?;
+        Ok(data_read::read_as_f32_zerocopy(raw, &dt))
+    }
+
     /// Read all data as `f32` values.
     pub fn read_f32(&self) -> Result<Vec<f32>, Error> {
         let raw = self.read_raw()?;

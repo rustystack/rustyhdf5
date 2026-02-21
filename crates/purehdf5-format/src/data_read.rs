@@ -144,6 +144,80 @@ pub fn read_raw_data_cached(
     }
 }
 
+/// Zero-copy transmute of raw bytes to `&[f64]`.
+///
+/// Returns `Some(&[f64])` when the datatype is native little-endian `f64`
+/// and the data pointer is 8-byte aligned.  Returns `None` for any other
+/// type or alignment — the caller should fall back to [`read_as_f64`].
+pub fn read_as_f64_zerocopy<'a>(raw: &'a [u8], datatype: &Datatype) -> Option<&'a [f64]> {
+    // Only native LE f64 is eligible
+    #[cfg(target_endian = "little")]
+    {
+        if !matches!(
+            datatype,
+            Datatype::FloatingPoint {
+                size: 8,
+                byte_order: DatatypeByteOrder::LittleEndian,
+                ..
+            }
+        ) {
+            return None;
+        }
+        if raw.len() % 8 != 0 {
+            return None;
+        }
+        let ptr = raw.as_ptr();
+        if (ptr as usize) % core::mem::align_of::<f64>() != 0 {
+            return None;
+        }
+        let count = raw.len() / 8;
+        // SAFETY: We verified alignment (8-byte), size (multiple of 8), and
+        // the on-disk format matches the in-memory representation (LE f64).
+        Some(unsafe { core::slice::from_raw_parts(ptr as *const f64, count) })
+    }
+    #[cfg(not(target_endian = "little"))]
+    {
+        let _ = (raw, datatype);
+        None
+    }
+}
+
+/// Zero-copy transmute of raw bytes to `&[f32]`.
+///
+/// Returns `Some(&[f32])` when the datatype is native little-endian `f32`
+/// and the data pointer is 4-byte aligned.  Returns `None` otherwise.
+pub fn read_as_f32_zerocopy<'a>(raw: &'a [u8], datatype: &Datatype) -> Option<&'a [f32]> {
+    #[cfg(target_endian = "little")]
+    {
+        if !matches!(
+            datatype,
+            Datatype::FloatingPoint {
+                size: 4,
+                byte_order: DatatypeByteOrder::LittleEndian,
+                ..
+            }
+        ) {
+            return None;
+        }
+        if raw.len() % 4 != 0 {
+            return None;
+        }
+        let ptr = raw.as_ptr();
+        if (ptr as usize) % core::mem::align_of::<f32>() != 0 {
+            return None;
+        }
+        let count = raw.len() / 4;
+        // SAFETY: We verified alignment (4-byte), size (multiple of 4), and
+        // the on-disk format matches the in-memory representation (LE f32).
+        Some(unsafe { core::slice::from_raw_parts(ptr as *const f32, count) })
+    }
+    #[cfg(not(target_endian = "little"))]
+    {
+        let _ = (raw, datatype);
+        None
+    }
+}
+
 fn datatype_name(dt: &Datatype) -> &'static str {
     match dt {
         Datatype::FixedPoint { .. } => "FixedPoint",
@@ -1225,6 +1299,93 @@ mod tests {
         };
         let err = read_raw_data_zerocopy(&[], &layout, &ds, &dt).unwrap_err();
         assert!(matches!(err, FormatError::NoDataAllocated));
+    }
+
+    #[test]
+    fn read_as_f64_zerocopy_aligned() {
+        let dt = make_f64_le_type();
+        // Create aligned data — Vec<f64> guarantees 8-byte alignment
+        let values = vec![1.0f64, 2.0, 3.0, 4.0];
+        let raw: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                values.as_ptr() as *const u8,
+                values.len() * 8,
+            )
+        };
+        let result = read_as_f64_zerocopy(raw, &dt);
+        assert!(result.is_some(), "aligned native LE f64 should succeed");
+        let slice = result.unwrap();
+        assert_eq!(slice, &[1.0, 2.0, 3.0, 4.0]);
+        // Verify it's the same memory (zero-copy)
+        assert_eq!(slice.as_ptr() as *const u8, raw.as_ptr());
+    }
+
+    #[test]
+    fn read_as_f64_zerocopy_wrong_type() {
+        let dt = make_i32_le_type();
+        let values = vec![1.0f64; 4];
+        let raw: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                values.as_ptr() as *const u8,
+                values.len() * 8,
+            )
+        };
+        assert!(read_as_f64_zerocopy(raw, &dt).is_none());
+    }
+
+    #[test]
+    fn read_as_f64_zerocopy_big_endian() {
+        let dt = Datatype::FloatingPoint {
+            size: 8,
+            byte_order: DatatypeByteOrder::BigEndian,
+            bit_offset: 0,
+            bit_precision: 64,
+            exponent_location: 52,
+            exponent_size: 11,
+            mantissa_location: 0,
+            mantissa_size: 52,
+            exponent_bias: 1023,
+        };
+        let values = vec![1.0f64; 4];
+        let raw: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                values.as_ptr() as *const u8,
+                values.len() * 8,
+            )
+        };
+        assert!(read_as_f64_zerocopy(raw, &dt).is_none());
+    }
+
+    #[test]
+    fn read_as_f64_zerocopy_odd_size() {
+        let dt = make_f64_le_type();
+        let raw = &[0u8; 13]; // not a multiple of 8
+        assert!(read_as_f64_zerocopy(raw, &dt).is_none());
+    }
+
+    #[test]
+    fn read_as_f32_zerocopy_aligned() {
+        let dt = Datatype::FloatingPoint {
+            size: 4,
+            byte_order: DatatypeByteOrder::LittleEndian,
+            bit_offset: 0,
+            bit_precision: 32,
+            exponent_location: 23,
+            exponent_size: 8,
+            mantissa_location: 0,
+            mantissa_size: 23,
+            exponent_bias: 127,
+        };
+        let values = vec![1.5f32, 2.5, 3.5];
+        let raw: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                values.as_ptr() as *const u8,
+                values.len() * 4,
+            )
+        };
+        let result = read_as_f32_zerocopy(raw, &dt);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), &[1.5f32, 2.5, 3.5]);
     }
 
     #[test]
