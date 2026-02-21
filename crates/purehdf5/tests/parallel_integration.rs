@@ -522,3 +522,202 @@ fn compiles_without_optional_features() {
     let data = file.dataset("x").unwrap().read_f64().unwrap();
     assert_eq!(data, vec![1.0]);
 }
+
+// ===========================================================================
+// Part 5: Parallel metadata creation tests
+// ===========================================================================
+
+#[cfg(feature = "parallel")]
+mod parallel_metadata_tests {
+    use purehdf5::{create_datasets_parallel, AttrValue, DatasetSpec, File};
+    use purehdf5_format::error::FormatError;
+    use purehdf5_format::metadata_index::{MetadataBlock, MetadataIndex, build_dataset_metadata};
+    use purehdf5_format::file_writer::{IndependentDatasetBuilder, finalize_parallel};
+    use purehdf5_format::chunked_write::ChunkOptions;
+    use purehdf5_format::type_builders::make_f64_type;
+
+    // Test 27: Create 100+ datasets in parallel and verify all metadata
+    #[test]
+    fn parallel_create_100_datasets() {
+        let n = 150;
+        let specs: Vec<DatasetSpec> = (0..n)
+            .map(|i| {
+                let data: Vec<f64> = (0..10).map(|j| (i * 10 + j) as f64).collect();
+                DatasetSpec::f64(&format!("dataset_{i:04}"), &data)
+                    .with_attr("index", AttrValue::I64(i as i64))
+            })
+            .collect();
+
+        let bytes = create_datasets_parallel(specs).unwrap();
+        let file = File::from_bytes(bytes).unwrap();
+
+        // Verify all datasets are readable with correct data
+        for i in 0..n {
+            let name = format!("dataset_{i:04}");
+            let ds = file.dataset(&name).unwrap();
+            let values = ds.read_f64().unwrap();
+            let expected: Vec<f64> = (0..10).map(|j| (i * 10 + j) as f64).collect();
+            assert_eq!(values, expected, "mismatch for {name}");
+
+            let attrs = ds.attrs().unwrap();
+            assert!(
+                matches!(attrs.get("index"), Some(AttrValue::I64(v)) if *v == i as i64),
+                "attr mismatch for {name}"
+            );
+        }
+
+        // Verify root group lists all datasets
+        let root = file.root();
+        let mut ds_names = root.datasets().unwrap();
+        ds_names.sort();
+        assert_eq!(ds_names.len(), n);
+    }
+
+    // Test 28: Parallel files are readable by the standard reader
+    #[test]
+    fn parallel_file_readable_by_standard_reader() {
+        let specs = vec![
+            DatasetSpec::f64("alpha", &[1.0, 2.0, 3.0]),
+            DatasetSpec::i32("beta", &[10, 20, 30]),
+            DatasetSpec::f64("gamma", &[100.0]),
+        ];
+        let bytes = create_datasets_parallel(specs).unwrap();
+
+        // Verify HDF5 signature
+        assert_eq!(&bytes[..8], b"\x89HDF\r\n\x1a\n");
+
+        // Read back with standard File reader
+        let file = File::from_bytes(bytes).unwrap();
+        assert_eq!(file.dataset("alpha").unwrap().read_f64().unwrap(), vec![1.0, 2.0, 3.0]);
+        assert_eq!(file.dataset("beta").unwrap().read_i32().unwrap(), vec![10, 20, 30]);
+        assert_eq!(file.dataset("gamma").unwrap().read_f64().unwrap(), vec![100.0]);
+    }
+
+    // Test 29: Merge detects duplicate dataset names
+    #[test]
+    fn parallel_merge_rejects_duplicates() {
+        let mut b0 = MetadataBlock::new(0);
+        b0.add_dataset(build_dataset_metadata(
+            "dup_name", make_f64_type(), vec![1], vec![0u8; 8],
+            ChunkOptions::default(), None, vec![],
+        ));
+
+        let mut b1 = MetadataBlock::new(1);
+        b1.add_dataset(build_dataset_metadata(
+            "dup_name", make_f64_type(), vec![1], vec![0u8; 8],
+            ChunkOptions::default(), None, vec![],
+        ));
+
+        let err = MetadataIndex::merge_blocks(&[b0, b1]).unwrap_err();
+        assert!(matches!(err, FormatError::DuplicateDatasetName(ref n) if n == "dup_name"));
+    }
+
+    // Test 30: finalize_parallel also rejects duplicates
+    #[test]
+    fn finalize_parallel_rejects_duplicates() {
+        let mut b0 = MetadataBlock::new(0);
+        b0.add_dataset(build_dataset_metadata(
+            "same", make_f64_type(), vec![1], vec![0u8; 8],
+            ChunkOptions::default(), None, vec![],
+        ));
+        let mut b1 = MetadataBlock::new(1);
+        b1.add_dataset(build_dataset_metadata(
+            "same", make_f64_type(), vec![1], vec![0u8; 8],
+            ChunkOptions::default(), None, vec![],
+        ));
+        let err = finalize_parallel(vec![b0, b1]).unwrap_err();
+        assert!(matches!(err, FormatError::DuplicateDatasetName(_)));
+    }
+
+    // Test 31: IndependentDatasetBuilder basic usage
+    #[test]
+    fn independent_builder_basic() {
+        let mut builder = IndependentDatasetBuilder::new(42);
+        builder.add_dataset(build_dataset_metadata(
+            "ds1", make_f64_type(), vec![3],
+            1.0f64.to_le_bytes().iter()
+                .chain(2.0f64.to_le_bytes().iter())
+                .chain(3.0f64.to_le_bytes().iter())
+                .copied().collect(),
+            ChunkOptions::default(), None, vec![],
+        ));
+        let block = builder.finish();
+        assert_eq!(block.creator_id, 42);
+        assert_eq!(block.datasets.len(), 1);
+
+        let bytes = finalize_parallel(vec![block]).unwrap();
+        let file = File::from_bytes(bytes).unwrap();
+        assert_eq!(file.dataset("ds1").unwrap().read_f64().unwrap(), vec![1.0, 2.0, 3.0]);
+    }
+
+    // Test 32: Benchmark-style test — parallel vs sequential creation of N datasets
+    #[test]
+    fn parallel_vs_sequential_correctness() {
+        let n = 50;
+        let data: Vec<f64> = (0..20).map(|i| i as f64).collect();
+
+        // Sequential
+        let mut fb = purehdf5::FileBuilder::new();
+        for i in 0..n {
+            fb.create_dataset(&format!("ds_{i:03}")).with_f64_data(&data);
+        }
+        let seq_bytes = fb.finish().unwrap();
+
+        // Parallel
+        let specs: Vec<DatasetSpec> = (0..n)
+            .map(|i| DatasetSpec::f64(&format!("ds_{i:03}"), &data))
+            .collect();
+        let par_bytes = create_datasets_parallel(specs).unwrap();
+
+        // Both should produce valid files with same data
+        let seq_file = File::from_bytes(seq_bytes).unwrap();
+        let par_file = File::from_bytes(par_bytes).unwrap();
+
+        for i in 0..n {
+            let name = format!("ds_{i:03}");
+            let seq_vals = seq_file.dataset(&name).unwrap().read_f64().unwrap();
+            let par_vals = par_file.dataset(&name).unwrap().read_f64().unwrap();
+            assert_eq!(seq_vals, par_vals, "data mismatch for {name}");
+        }
+    }
+
+    // Test 33: Empty parallel creation
+    #[test]
+    fn parallel_empty_specs() {
+        let bytes = create_datasets_parallel(vec![]).unwrap();
+        let file = File::from_bytes(bytes).unwrap();
+        let root = file.root();
+        assert!(root.datasets().unwrap().is_empty());
+    }
+
+    // Test 34: Single dataset parallel
+    #[test]
+    fn parallel_single_dataset() {
+        let specs = vec![DatasetSpec::f64("only", &[42.0])];
+        let bytes = create_datasets_parallel(specs).unwrap();
+        let file = File::from_bytes(bytes).unwrap();
+        assert_eq!(file.dataset("only").unwrap().read_f64().unwrap(), vec![42.0]);
+    }
+
+    // Test 35: Datasets with attributes in parallel
+    #[test]
+    fn parallel_datasets_with_multiple_attrs() {
+        let specs: Vec<DatasetSpec> = (0..10)
+            .map(|i| {
+                DatasetSpec::f64(&format!("ds_{i}"), &[i as f64])
+                    .with_attr("name", AttrValue::String(format!("dataset {i}")))
+                    .with_attr("value", AttrValue::F64(i as f64 * 0.5))
+            })
+            .collect();
+
+        let bytes = create_datasets_parallel(specs).unwrap();
+        let file = File::from_bytes(bytes).unwrap();
+
+        for i in 0..10 {
+            let ds = file.dataset(&format!("ds_{i}")).unwrap();
+            let attrs = ds.attrs().unwrap();
+            assert!(matches!(attrs.get("name"), Some(AttrValue::String(s)) if s == &format!("dataset {i}")));
+            assert!(matches!(attrs.get("value"), Some(AttrValue::F64(v)) if (*v - i as f64 * 0.5).abs() < 1e-10));
+        }
+    }
+}

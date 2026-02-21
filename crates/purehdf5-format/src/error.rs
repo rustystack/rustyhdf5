@@ -169,6 +169,8 @@ pub enum FormatError {
     },
     /// Maximum nesting/continuation depth exceeded (malformed data protection).
     NestingDepthExceeded,
+    /// Duplicate dataset name detected during parallel metadata merge.
+    DuplicateDatasetName(String),
 }
 
 impl fmt::Display for FormatError {
@@ -371,6 +373,9 @@ impl fmt::Display for FormatError {
             }
             FormatError::NestingDepthExceeded => {
                 write!(f, "maximum nesting/continuation depth exceeded")
+            }
+            FormatError::DuplicateDatasetName(ref name) => {
+                write!(f, "duplicate dataset name during parallel merge: {name}")
             }
         }
     }

@@ -28,7 +28,7 @@ pub fn make_f64_type() -> Datatype {
     }
 }
 
-pub(crate) fn make_f32_type() -> Datatype {
+pub fn make_f32_type() -> Datatype {
     Datatype::FloatingPoint {
         size: 4,
         byte_order: DatatypeByteOrder::LittleEndian,
@@ -42,7 +42,7 @@ pub(crate) fn make_f32_type() -> Datatype {
     }
 }
 
-pub(crate) fn make_i32_type() -> Datatype {
+pub fn make_i32_type() -> Datatype {
     Datatype::FixedPoint {
         size: 4,
         byte_order: DatatypeByteOrder::LittleEndian,
@@ -52,7 +52,7 @@ pub(crate) fn make_i32_type() -> Datatype {
     }
 }
 
-pub(crate) fn make_i64_type() -> Datatype {
+pub fn make_i64_type() -> Datatype {
     Datatype::FixedPoint {
         size: 8,
         byte_order: DatatypeByteOrder::LittleEndian,
@@ -62,7 +62,7 @@ pub(crate) fn make_i64_type() -> Datatype {
     }
 }
 
-pub(crate) fn make_u8_type() -> Datatype {
+pub fn make_u8_type() -> Datatype {
     Datatype::FixedPoint {
         size: 1,
         byte_order: DatatypeByteOrder::LittleEndian,

@@ -39,6 +39,8 @@ pub use mmap_file::{MmapDataset, MmapFile, MmapGroup};
 pub use reader::{Dataset, File, Group};
 pub use types::{AttrValue, DType};
 pub use writer::FileBuilder;
+#[cfg(feature = "parallel")]
+pub use writer::{create_datasets_parallel, DatasetSpec};
 
 // Re-export useful types from purehdf5-format for advanced users
 pub use purehdf5_format::type_builders::{CompoundTypeBuilder, EnumTypeBuilder};

@@ -8,6 +8,15 @@ use purehdf5_format::type_builders::{
 
 use crate::error::Error;
 
+#[cfg(feature = "parallel")]
+use purehdf5_format::chunked_write::ChunkOptions;
+#[cfg(feature = "parallel")]
+use purehdf5_format::datatype::Datatype;
+#[cfg(feature = "parallel")]
+use purehdf5_format::file_writer::IndependentDatasetBuilder;
+#[cfg(feature = "parallel")]
+use purehdf5_format::metadata_index::{build_dataset_metadata, MetadataBlock};
+
 /// Builder for creating a new HDF5 file.
 ///
 /// # Example
@@ -71,4 +80,109 @@ impl Default for FileBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ---- Parallel dataset creation API ----
+
+/// Specification for a dataset to be created in parallel.
+///
+/// Used with [`create_datasets_parallel`] to create many datasets concurrently
+/// using independent metadata blocks and rayon.
+#[cfg(feature = "parallel")]
+#[derive(Debug, Clone)]
+pub struct DatasetSpec {
+    /// Dataset name (used as the root-level link name).
+    pub name: String,
+    /// HDF5 datatype for the dataset.
+    pub datatype: Datatype,
+    /// Shape of the dataset.
+    pub shape: Vec<u64>,
+    /// Raw data bytes (little-endian).
+    pub raw_data: Vec<u8>,
+    /// Chunk options (leave default for contiguous storage).
+    pub chunk_options: ChunkOptions,
+    /// Optional maximum shape for resizable datasets.
+    pub maxshape: Option<Vec<u64>>,
+    /// Attributes to attach to the dataset.
+    pub attrs: Vec<(String, AttrValue)>,
+}
+
+#[cfg(feature = "parallel")]
+impl DatasetSpec {
+    /// Create a simple f64 dataset spec.
+    pub fn f64(name: &str, data: &[f64]) -> Self {
+        let mut raw = Vec::with_capacity(data.len() * 8);
+        for &v in data {
+            raw.extend_from_slice(&v.to_le_bytes());
+        }
+        Self {
+            name: name.to_string(),
+            datatype: purehdf5_format::type_builders::make_f64_type(),
+            shape: vec![data.len() as u64],
+            raw_data: raw,
+            chunk_options: ChunkOptions::default(),
+            maxshape: None,
+            attrs: Vec::new(),
+        }
+    }
+
+    /// Create a simple i32 dataset spec.
+    pub fn i32(name: &str, data: &[i32]) -> Self {
+        let mut raw = Vec::with_capacity(data.len() * 4);
+        for &v in data {
+            raw.extend_from_slice(&v.to_le_bytes());
+        }
+        Self {
+            name: name.to_string(),
+            datatype: purehdf5_format::type_builders::make_i32_type(),
+            shape: vec![data.len() as u64],
+            raw_data: raw,
+            chunk_options: ChunkOptions::default(),
+            maxshape: None,
+            attrs: Vec::new(),
+        }
+    }
+
+    /// Add an attribute to this spec.
+    pub fn with_attr(mut self, name: &str, value: AttrValue) -> Self {
+        self.attrs.push((name.to_string(), value));
+        self
+    }
+}
+
+/// Create multiple datasets in parallel using independent metadata blocks.
+///
+/// Uses rayon to build metadata blocks concurrently, then merges them into a
+/// single valid HDF5 file. Each dataset gets its own independent metadata block,
+/// avoiding contention on the file header.
+///
+/// Returns the serialized HDF5 file bytes.
+#[cfg(feature = "parallel")]
+pub fn create_datasets_parallel(specs: Vec<DatasetSpec>) -> Result<Vec<u8>, Error> {
+    use rayon::prelude::*;
+
+    // Phase 1: Build metadata blocks in parallel (one per dataset).
+    // Each spec gets its own IndependentDatasetBuilder on its own "creator".
+    let blocks: Vec<MetadataBlock> = specs
+        .into_par_iter()
+        .enumerate()
+        .map(|(i, spec)| {
+            let mut builder = IndependentDatasetBuilder::new(i as u32);
+            let meta = build_dataset_metadata(
+                &spec.name,
+                spec.datatype,
+                spec.shape,
+                spec.raw_data,
+                spec.chunk_options,
+                spec.maxshape,
+                spec.attrs,
+            );
+            builder.add_dataset(meta);
+            builder.finish()
+        })
+        .collect();
+
+    // Phase 2: Merge blocks and finalize into an HDF5 file.
+    let bytes = purehdf5_format::file_writer::finalize_parallel(blocks)?;
+    Ok(bytes)
 }
