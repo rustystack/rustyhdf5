@@ -16,6 +16,8 @@ pub enum Error {
     NotADataset(String),
     /// A required header message was not found.
     MissingMessage(MessageType),
+    /// Alignment or size error for zero-copy typed access.
+    AlignmentError(String),
 }
 
 impl fmt::Display for Error {
@@ -25,6 +27,7 @@ impl fmt::Display for Error {
             Error::Format(e) => write!(f, "HDF5 format error: {e}"),
             Error::NotADataset(path) => write!(f, "not a dataset: {path}"),
             Error::MissingMessage(mt) => write!(f, "missing required message: {mt:?}"),
+            Error::AlignmentError(ref msg) => write!(f, "alignment error: {msg}"),
         }
     }
 }

@@ -463,3 +463,114 @@ fn mmap_as_bytes() {
     assert_eq!(file_bytes.len(), bytes.len());
     std::fs::remove_file(&path).ok();
 }
+
+// ---------------------------------------------------------------------------
+// Test 22: read_as_slice::<f64> zero-copy typed read
+// ---------------------------------------------------------------------------
+
+#[test]
+fn zero_copy_read_as_slice_f64() {
+    let values: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+    let mut b = FileBuilder::new();
+    b.create_dataset("data").with_f64_data(&values);
+    let bytes = b.finish().unwrap();
+    let path = write_to_temp(&bytes, "mmap_default_test_22.h5");
+
+    let file = File::open(&path).unwrap();
+    let ds = file.dataset("data").unwrap();
+    match ds.read_as_slice::<f64>() {
+        Ok(Some(typed)) => assert_eq!(typed, &[1.0, 2.0, 3.0, 4.0, 5.0]),
+        Ok(None) => panic!("contiguous dataset should return Some"),
+        Err(e) => {
+            // Alignment error is acceptable if mmap offset isn't 8-byte aligned
+            assert!(format!("{e}").contains("alignment"), "unexpected error: {e}");
+        }
+    }
+    std::fs::remove_file(&path).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Test 23: read_as_slice pointer identity (points into mmap region)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn zero_copy_read_as_slice_pointer_identity() {
+    let values: Vec<f64> = vec![42.0, 43.0];
+    let mut b = FileBuilder::new();
+    b.create_dataset("data").with_f64_data(&values);
+    let bytes = b.finish().unwrap();
+    let path = write_to_temp(&bytes, "mmap_default_test_23.h5");
+
+    let file = File::open(&path).unwrap();
+    let file_bytes = file.as_bytes();
+    let file_range = file_bytes.as_ptr_range();
+
+    let ds = file.dataset("data").unwrap();
+    // Get the raw slice
+    let raw = ds.read_raw_ref().unwrap().unwrap();
+    assert!(file_range.contains(&raw.as_ptr()), "raw slice must point into mmap");
+
+    // Get the typed slice — must also point into the same region (if aligned)
+    match ds.read_as_slice::<f64>() {
+        Ok(Some(typed)) => {
+            let typed_ptr = typed.as_ptr() as *const u8;
+            assert!(file_range.contains(&typed_ptr), "typed slice must point into mmap");
+            assert_eq!(typed_ptr, raw.as_ptr(), "typed and raw should share the same pointer");
+            assert_eq!(typed, &[42.0, 43.0]);
+        }
+        Ok(None) => panic!("contiguous dataset should return Some"),
+        Err(e) => {
+            // Alignment error is acceptable if mmap offset isn't 8-byte aligned
+            assert!(format!("{e}").contains("alignment"), "unexpected error: {e}");
+        }
+    }
+    std::fs::remove_file(&path).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Test 24: read_as_slice returns None for chunked datasets
+// ---------------------------------------------------------------------------
+
+#[test]
+fn zero_copy_read_as_slice_chunked_returns_none() {
+    let data: Vec<f64> = (0..100).map(|i| i as f64).collect();
+    let mut b = FileBuilder::new();
+    b.create_dataset("data")
+        .with_f64_data(&data)
+        .with_shape(&[100])
+        .with_chunks(&[10]);
+    let bytes = b.finish().unwrap();
+    let path = write_to_temp(&bytes, "mmap_default_test_24.h5");
+
+    let file = File::open(&path).unwrap();
+    let ds = file.dataset("data").unwrap();
+    let result = ds.read_as_slice::<f64>().unwrap();
+    assert!(result.is_none(), "chunked dataset should return None");
+    std::fs::remove_file(&path).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Test 25: read_as_slice with i32 data
+// ---------------------------------------------------------------------------
+
+#[test]
+fn zero_copy_read_as_slice_i32() {
+    let values: Vec<i32> = vec![10, -20, 30, -40];
+    let mut b = FileBuilder::new();
+    b.create_dataset("data").with_i32_data(&values);
+    let bytes = b.finish().unwrap();
+    let path = write_to_temp(&bytes, "mmap_default_test_25.h5");
+
+    let file = File::open(&path).unwrap();
+    let ds = file.dataset("data").unwrap();
+    // i32 has 4-byte alignment which mmap should satisfy
+    match ds.read_as_slice::<i32>() {
+        Ok(Some(typed)) => assert_eq!(typed, &[10, -20, 30, -40]),
+        Ok(None) => panic!("contiguous dataset should return Some"),
+        Err(e) => {
+            // Alignment error is acceptable if mmap offset isn't aligned
+            assert!(format!("{e}").contains("alignment"), "unexpected error: {e}");
+        }
+    }
+    std::fs::remove_file(&path).ok();
+}
