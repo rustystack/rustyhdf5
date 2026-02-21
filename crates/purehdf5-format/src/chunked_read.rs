@@ -6,7 +6,7 @@ extern crate alloc;
 #[cfg(not(feature = "std"))]
 use alloc::{format, vec, vec::Vec};
 
-use crate::chunk_cache::ChunkCache;
+use crate::chunk_cache::{ChunkCache, CacheAlignedBuffer};
 use crate::data_layout::DataLayout;
 use crate::dataspace::Dataspace;
 use crate::datatype::Datatype;
@@ -19,31 +19,34 @@ use crate::fixed_array::{FixedArrayHeader, read_fixed_array_chunks};
 #[cfg(feature = "parallel")]
 use crate::parallel_read;
 
-/// Decompress all chunks, using parallel decompression when the `parallel`
-/// feature is enabled and the chunk count exceeds the threshold.
+/// Decompress all chunks into cache-line-aligned buffers.
+///
+/// Uses parallel decompression when the `parallel` feature is enabled and the
+/// chunk count exceeds the threshold.
 fn decompress_all_chunks(
     file_data: &[u8],
     chunks: &[ChunkInfo],
     pipeline: Option<&FilterPipeline>,
     chunk_total_bytes: usize,
     element_size: u32,
-) -> Result<Vec<Vec<u8>>, FormatError> {
+) -> Result<Vec<CacheAlignedBuffer>, FormatError> {
     #[cfg(feature = "parallel")]
     {
         if let Some(pl) = pipeline {
             if parallel_read::should_use_parallel(chunks.len()) {
-                return parallel_read::decompress_chunks_parallel(
+                let vecs = parallel_read::decompress_chunks_parallel(
                     file_data,
                     chunks,
                     pl,
                     chunk_total_bytes,
                     element_size,
-                );
+                )?;
+                return Ok(vecs.into_iter().map(CacheAlignedBuffer::from_vec).collect());
             }
         }
     }
 
-    // Sequential fallback
+    // Sequential fallback — allocate into aligned buffers
     let mut result = Vec::with_capacity(chunks.len());
     for chunk_info in chunks {
         let c_addr = chunk_info.address as usize;
@@ -65,7 +68,7 @@ fn decompress_all_chunks(
         } else {
             raw_chunk.to_vec()
         };
-        result.push(decompressed);
+        result.push(CacheAlignedBuffer::from_vec(decompressed));
     }
     Ok(result)
 }

@@ -21,6 +21,29 @@ pub mod avx512;
 pub mod checksum;
 pub mod convert;
 
+// ---------------------------------------------------------------------------
+// Cache-line size detection (TVL — Tensor Virtualization Layout)
+// ---------------------------------------------------------------------------
+
+/// Cache line size in bytes for the target architecture.
+///
+/// ARM64 (Apple M-series, Cortex-A76+) uses 128-byte cache lines.
+/// x86_64 uses 64-byte cache lines. Other architectures default to 64.
+#[cfg(target_arch = "aarch64")]
+pub const CACHE_LINE_SIZE: usize = 128;
+
+#[cfg(target_arch = "x86_64")]
+pub const CACHE_LINE_SIZE: usize = 64;
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+pub const CACHE_LINE_SIZE: usize = 64;
+
+/// Round `size` up to the next multiple of [`CACHE_LINE_SIZE`].
+#[inline]
+pub fn align_to_cache_line(size: usize) -> usize {
+    (size + CACHE_LINE_SIZE - 1) & !(CACHE_LINE_SIZE - 1)
+}
+
 /// Available SIMD backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -578,6 +601,41 @@ mod tests {
             per_call.as_nanos() < limit_ns,
             "dot product too slow: {per_call:?} per call (limit {limit_ns}ns)"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Cache-line alignment (TVL)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cache_line_size_is_power_of_two() {
+        assert!(CACHE_LINE_SIZE.is_power_of_two());
+    }
+
+    #[test]
+    fn test_cache_line_size_platform() {
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(CACHE_LINE_SIZE, 128);
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(CACHE_LINE_SIZE, 64);
+    }
+
+    #[test]
+    fn test_align_to_cache_line() {
+        assert_eq!(align_to_cache_line(0), 0);
+        assert_eq!(align_to_cache_line(1), CACHE_LINE_SIZE);
+        assert_eq!(align_to_cache_line(CACHE_LINE_SIZE), CACHE_LINE_SIZE);
+        assert_eq!(align_to_cache_line(CACHE_LINE_SIZE + 1), CACHE_LINE_SIZE * 2);
+        assert_eq!(align_to_cache_line(CACHE_LINE_SIZE * 3), CACHE_LINE_SIZE * 3);
+    }
+
+    #[test]
+    fn test_align_to_cache_line_64_and_128() {
+        // Both 64 and 128 alignment scenarios
+        let val = align_to_cache_line(100);
+        assert_eq!(val % CACHE_LINE_SIZE, 0);
+        assert!(val >= 100);
+        assert!(val < 100 + CACHE_LINE_SIZE);
     }
 
     // -----------------------------------------------------------------------

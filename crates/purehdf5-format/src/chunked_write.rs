@@ -7,11 +7,22 @@ extern crate alloc;
 use alloc::{vec, vec::Vec};
 
 use crate::checksum::jenkins_lookup3;
+use crate::chunk_cache::{CACHE_LINE_SIZE, align_to_cache_line};
 use crate::error::FormatError;
 use crate::filter_pipeline::{
     FilterDescription, FilterPipeline, FILTER_DEFLATE, FILTER_FLETCHER32, FILTER_SHUFFLE,
 };
 use crate::filters::compress_chunk;
+
+/// Round a file offset up to the next cache-line boundary.
+///
+/// This ensures chunk data starts at an address that is a multiple of the
+/// architecture's cache line size, enabling aligned loads in SIMD paths.
+#[inline]
+pub fn align_chunk_offset(offset: u64) -> u64 {
+    let align = CACHE_LINE_SIZE as u64;
+    (offset + align - 1) & !(align - 1)
+}
 
 /// Options for chunked dataset creation.
 #[derive(Debug, Clone, Default)]
@@ -872,7 +883,7 @@ pub fn build_chunked_data_at_ext(
     let num_chunks = chunks.len();
     let has_filters = pipeline.is_some();
 
-    // Compress each chunk
+    // Compress each chunk, padding to cache-line boundaries for aligned access
     let mut data_buf = Vec::new();
     let mut written_chunks = Vec::with_capacity(num_chunks);
 
@@ -882,6 +893,12 @@ pub fn build_chunked_data_at_ext(
         } else {
             chunk_bytes.clone()
         };
+
+        // Pad current position to cache-line boundary
+        let aligned_offset = align_to_cache_line(data_buf.len());
+        if aligned_offset > data_buf.len() {
+            data_buf.resize(aligned_offset, 0u8);
+        }
 
         let address = base_address + data_buf.len() as u64;
         let compressed_size = compressed.len() as u64;
@@ -903,6 +920,12 @@ pub fn build_chunked_data_at_ext(
 
     // Determine if we should use Extensible Array (resizable datasets)
     let use_extensible = maxshape.is_some_and(|ms| ms.contains(&u64::MAX));
+
+    // Pad before index structures so they are also cache-line aligned
+    let aligned_idx = align_to_cache_line(data_buf.len());
+    if aligned_idx > data_buf.len() {
+        data_buf.resize(aligned_idx, 0u8);
+    }
 
     let layout_message = if use_extensible {
         let ea_address = base_address + data_buf.len() as u64;
@@ -1165,6 +1188,54 @@ mod tests {
         };
         let result = roundtrip_chunked(&values, &[6, 4], &[3, 2], &options);
         assert_eq!(result, values);
+    }
+
+    #[test]
+    fn align_chunk_offset_values() {
+        use super::align_chunk_offset;
+        use super::CACHE_LINE_SIZE;
+        let cl = CACHE_LINE_SIZE as u64;
+        assert_eq!(align_chunk_offset(0), 0);
+        assert_eq!(align_chunk_offset(1), cl);
+        assert_eq!(align_chunk_offset(cl), cl);
+        assert_eq!(align_chunk_offset(cl + 1), cl * 2);
+        assert_eq!(align_chunk_offset(cl * 10), cl * 10);
+    }
+
+    #[test]
+    fn chunk_addresses_are_cache_aligned() {
+        use super::{CACHE_LINE_SIZE, align_chunk_offset};
+        let values: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let raw = f64_to_bytes(&values);
+        let base_address = 0x1000u64;
+        // Ensure base is aligned for this test
+        let base_address = align_chunk_offset(base_address);
+        let options = ChunkOptions {
+            chunk_dims: Some(vec![20]),
+            ..Default::default()
+        };
+        let result =
+            build_chunked_data_at(&raw, &[100], &[20], 8, &options, base_address).unwrap();
+
+        // Parse layout to get chunk addresses (via roundtrip read)
+        let file_size = base_address as usize + result.data_bytes.len();
+        let mut file_data = vec![0u8; file_size];
+        file_data[base_address as usize..].copy_from_slice(&result.data_bytes);
+
+        let layout = DataLayout::parse(&result.layout_message, 8, 8).unwrap();
+        let dataspace = Dataspace {
+            space_type: DataspaceType::Simple,
+            rank: 1,
+            dimensions: vec![100],
+            max_dimensions: None,
+        };
+        let datatype = make_f64_type();
+
+        // Verify data roundtrips correctly
+        let output = read_chunked_data(
+            &file_data, &layout, &dataspace, &datatype, None, 8, 8,
+        ).unwrap();
+        assert_eq!(bytes_to_f64(&output), values);
     }
 
     #[test]
