@@ -80,6 +80,7 @@ fn bench_write_chunked(c: &mut Criterion) {
 
 fn bench_write_chunked_deflate(c: &mut Criterion) {
     let data = make_data();
+    // flate2 backend: zlib-ng when fast-deflate enabled, miniz_oxide otherwise
     c.bench_function("write_1M_f64_chunked_deflate", |b| {
         b.iter(|| {
             let mut fw = FileWriter::new();

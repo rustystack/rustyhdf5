@@ -30,7 +30,8 @@ name = "parallel_bench"
 harness = false
 
 [features]
-default = ["mmap"]
+default = ["mmap", "fast-deflate"]
 mmap = ["purehdf5-io/mmap"]
 parallel = ["purehdf5-format/parallel", "rayon"]
 fast-deflate = ["purehdf5-format/fast-deflate"]
+apple-compression = []
