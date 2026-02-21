@@ -361,29 +361,57 @@ impl<'f> Dataset<'f> {
         let dl = self.data_layout()?;
         let ds = self.dataspace()?;
         let dt = self.datatype()?;
-        let expected = ds.num_elements() as usize * dt.type_size() as usize;
-        match &dl {
-            DataLayout::Contiguous { address, size } => {
-                let addr = address.ok_or(Error::Format(FormatError::NoDataAllocated))?;
-                let sz = *size as usize;
-                if sz != expected {
-                    return Err(Error::Format(FormatError::DataSizeMismatch {
-                        expected,
-                        actual: sz,
-                    }));
-                }
-                let data = self.file.data.as_bytes();
-                let a = addr as usize;
-                if a + sz > data.len() {
-                    return Err(Error::Format(FormatError::UnexpectedEof {
-                        expected: a + sz,
-                        available: data.len(),
-                    }));
-                }
-                Ok(Some(&data[a..a + sz]))
-            }
-            _ => Ok(None),
+        let slice = data_read::read_raw_data_zerocopy(
+            self.file.data.as_bytes(),
+            &dl,
+            &ds,
+            &dt,
+        )?;
+        Ok(slice)
+    }
+
+    /// Zero-copy typed read of contiguous data as `&[T]`.
+    ///
+    /// Returns a borrowed slice of `T` directly from the file buffer with
+    /// no allocation or copy. Only works for contiguous layouts where the
+    /// raw bytes are properly aligned and sized for `T`.
+    ///
+    /// Returns `None` if the layout is not contiguous (compact/chunked).
+    ///
+    /// # Safety contract
+    ///
+    /// This is safe because it validates alignment and size before
+    /// reinterpreting the bytes. `T` must be a plain-old-data type
+    /// (no padding, no drop). Use only with primitive numeric types
+    /// like `f64`, `f32`, `i32`, `u64`, etc.
+    pub fn read_as_slice<T: Copy + 'static>(&self) -> Result<Option<&'f [T]>, Error> {
+        let raw = match self.read_raw_ref()? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let t_size = core::mem::size_of::<T>();
+        if t_size == 0 {
+            return Err(Error::AlignmentError("zero-sized type".into()));
         }
+        if raw.len() % t_size != 0 {
+            return Err(Error::AlignmentError(format!(
+                "data length {} is not a multiple of element size {}",
+                raw.len(),
+                t_size,
+            )));
+        }
+        let t_align = core::mem::align_of::<T>();
+        let ptr = raw.as_ptr();
+        if (ptr as usize) % t_align != 0 {
+            return Err(Error::AlignmentError(format!(
+                "data pointer {:p} is not aligned to {} bytes",
+                ptr, t_align,
+            )));
+        }
+        let count = raw.len() / t_size;
+        // SAFETY: We verified alignment and size. T: Copy ensures no drop.
+        let typed = unsafe { core::slice::from_raw_parts(ptr as *const T, count) };
+        Ok(Some(typed))
     }
 
     /// Read all attributes of this dataset.

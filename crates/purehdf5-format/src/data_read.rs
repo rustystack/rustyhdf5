@@ -13,6 +13,44 @@ use crate::datatype::{Datatype, DatatypeByteOrder};
 use crate::error::FormatError;
 use crate::filter_pipeline::FilterPipeline;
 
+/// Zero-copy read of contiguous raw data, returning a borrowed slice.
+///
+/// For contiguous layouts, returns a direct `&[u8]` slice into `file_data`.
+/// For compact or chunked layouts, returns `Ok(None)` — the caller should
+/// fall back to `read_raw_data` for those.
+pub fn read_raw_data_zerocopy<'a>(
+    file_data: &'a [u8],
+    layout: &DataLayout,
+    dataspace: &Dataspace,
+    datatype: &Datatype,
+) -> Result<Option<&'a [u8]>, FormatError> {
+    let num_elements = dataspace.num_elements() as usize;
+    let elem_size = datatype.type_size() as usize;
+    let expected_size = num_elements * elem_size;
+
+    match layout {
+        DataLayout::Contiguous { address, size } => {
+            let addr = address.ok_or(FormatError::NoDataAllocated)?;
+            let addr = addr as usize;
+            let sz = *size as usize;
+            if sz != expected_size {
+                return Err(FormatError::DataSizeMismatch {
+                    expected: expected_size,
+                    actual: sz,
+                });
+            }
+            if addr + sz > file_data.len() {
+                return Err(FormatError::UnexpectedEof {
+                    expected: addr + sz,
+                    available: file_data.len(),
+                });
+            }
+            Ok(Some(&file_data[addr..addr + sz]))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Read raw bytes for a dataset given its layout and the file data buffer.
 ///
 /// For compact layouts, returns the inline data.
@@ -1110,5 +1148,65 @@ mod tests {
         let raw = vec![0u8; 12];
         let err = read_region_references(&raw, &dt).unwrap_err();
         assert!(matches!(err, FormatError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn zerocopy_contiguous_returns_slice_into_file_data() {
+        let dt = make_f64_le_type();
+        let ds = make_simple_dataspace(&[3]);
+        let mut file_data = vec![0u8; 1024];
+        let offset = 256usize;
+        let vals = [1.0f64, 2.0, 3.0];
+        for (i, v) in vals.iter().enumerate() {
+            file_data[offset + i * 8..offset + i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        let layout = DataLayout::Contiguous {
+            address: Some(offset as u64),
+            size: 24,
+        };
+        let result = read_raw_data_zerocopy(&file_data, &layout, &ds, &dt).unwrap();
+        let slice = result.expect("contiguous should return Some");
+        // Pointer identity: the slice must point into file_data, not a copy
+        let file_range = file_data.as_ptr_range();
+        assert!(file_range.contains(&slice.as_ptr()));
+        assert_eq!(slice.len(), 24);
+        // Verify the actual data
+        let values = read_as_f64(slice, &dt).unwrap();
+        assert_eq!(values, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn zerocopy_compact_returns_none() {
+        let dt = make_f64_le_type();
+        let ds = make_simple_dataspace(&[1]);
+        let data = vec![0u8; 8];
+        let layout = DataLayout::Compact { data };
+        let result = read_raw_data_zerocopy(&[], &layout, &ds, &dt).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn zerocopy_no_data_allocated() {
+        let dt = make_f64_le_type();
+        let ds = make_simple_dataspace(&[1]);
+        let layout = DataLayout::Contiguous {
+            address: None,
+            size: 8,
+        };
+        let err = read_raw_data_zerocopy(&[], &layout, &ds, &dt).unwrap_err();
+        assert!(matches!(err, FormatError::NoDataAllocated));
+    }
+
+    #[test]
+    fn zerocopy_size_mismatch() {
+        let dt = make_f64_le_type();
+        let ds = make_simple_dataspace(&[3]);
+        let file_data = vec![0u8; 1024];
+        let layout = DataLayout::Contiguous {
+            address: Some(0),
+            size: 16, // wrong: should be 24
+        };
+        let err = read_raw_data_zerocopy(&file_data, &layout, &ds, &dt).unwrap_err();
+        assert!(matches!(err, FormatError::DataSizeMismatch { .. }));
     }
 }
