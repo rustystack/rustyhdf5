@@ -6,7 +6,8 @@ use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
 #[cfg(feature = "std")]
 use std::collections::BTreeMap;
 
-use crate::chunked_read::read_chunked_data;
+use crate::chunk_cache::ChunkCache;
+use crate::chunked_read::{read_chunked_data, read_chunked_data_cached};
 use crate::data_layout::DataLayout;
 use crate::dataspace::Dataspace;
 use crate::datatype::{Datatype, DatatypeByteOrder};
@@ -73,6 +74,35 @@ pub fn read_raw_data_full(
             read_chunked_data(file_data, layout, dataspace, datatype, pipeline, offset_size, length_size)
         }
         DataLayout::Virtual { .. } => Err(FormatError::UnsupportedVersion(0)),
+    }
+}
+
+/// Read raw bytes with chunk cache support.
+///
+/// For chunked layouts the `cache` is used to avoid repeated B-tree
+/// traversals and to cache decompressed chunk data.  For compact and
+/// contiguous layouts this behaves identically to [`read_raw_data_full`].
+pub fn read_raw_data_cached(
+    file_data: &[u8],
+    layout: &DataLayout,
+    dataspace: &Dataspace,
+    datatype: &Datatype,
+    pipeline: Option<&FilterPipeline>,
+    offset_size: u8,
+    length_size: u8,
+    cache: &ChunkCache,
+) -> Result<Vec<u8>, FormatError> {
+    match layout {
+        DataLayout::Chunked { .. } => {
+            read_chunked_data_cached(
+                file_data, layout, dataspace, datatype, pipeline,
+                offset_size, length_size, cache,
+            )
+        }
+        _ => read_raw_data_full(
+            file_data, layout, dataspace, datatype, pipeline,
+            offset_size, length_size,
+        ),
     }
 }
 
