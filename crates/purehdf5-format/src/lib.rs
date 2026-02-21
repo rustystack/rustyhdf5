@@ -71,6 +71,8 @@ pub mod extensible_array;
 pub mod fixed_array;
 pub mod filters;
 #[cfg(feature = "parallel")]
+pub mod lane_partition;
+#[cfg(feature = "parallel")]
 pub mod parallel_read;
 pub mod dataspace;
 pub mod datatype;
