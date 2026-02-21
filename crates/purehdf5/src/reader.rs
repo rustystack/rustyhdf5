@@ -11,7 +11,7 @@ use purehdf5_format::attribute::extract_attributes_full;
 use purehdf5_format::data_layout::DataLayout;
 use purehdf5_format::data_read;
 use purehdf5_format::dataspace::Dataspace;
-use purehdf5_format::datatype::Datatype;
+use purehdf5_format::datatype::{Datatype, DatatypeByteOrder};
 use purehdf5_format::error::FormatError;
 use purehdf5_format::filter_pipeline::FilterPipeline;
 use purehdf5_format::group_v1::{self, GroupEntry};
@@ -386,6 +386,106 @@ impl<'f> Dataset<'f> {
         }
     }
 
+    /// Zero-copy read for contiguous native-endian `f64` datasets.
+    ///
+    /// Returns a direct `&[f64]` slice into the underlying file bytes — no
+    /// allocation, no copy.  Returns an error if the dataset is chunked,
+    /// non-native endian, not `f64`, or the data is not 8-byte aligned.
+    pub fn read_f64_zerocopy(&self) -> Result<&'f [f64], Error> {
+        let raw = self.zerocopy_raw_validated("f64", 8, |dt| {
+            matches!(dt, Datatype::FloatingPoint { size: 8, .. })
+        })?;
+        check_alignment::<f64>(raw.as_ptr())?;
+        let count = raw.len() / 8;
+        Ok(unsafe { std::slice::from_raw_parts(raw.as_ptr() as *const f64, count) })
+    }
+
+    /// Zero-copy read for contiguous native-endian `f32` datasets.
+    ///
+    /// Returns a direct `&[f32]` slice — no allocation, no copy.
+    pub fn read_f32_zerocopy(&self) -> Result<&'f [f32], Error> {
+        let raw = self.zerocopy_raw_validated("f32", 4, |dt| {
+            matches!(dt, Datatype::FloatingPoint { size: 4, .. })
+        })?;
+        check_alignment::<f32>(raw.as_ptr())?;
+        let count = raw.len() / 4;
+        Ok(unsafe { std::slice::from_raw_parts(raw.as_ptr() as *const f32, count) })
+    }
+
+    /// Zero-copy read for contiguous native-endian `i32` datasets.
+    ///
+    /// Returns a direct `&[i32]` slice — no allocation, no copy.
+    pub fn read_i32_zerocopy(&self) -> Result<&'f [i32], Error> {
+        let raw = self.zerocopy_raw_validated("i32", 4, |dt| {
+            matches!(dt, Datatype::FixedPoint { size: 4, signed: true, .. })
+        })?;
+        check_alignment::<i32>(raw.as_ptr())?;
+        let count = raw.len() / 4;
+        Ok(unsafe { std::slice::from_raw_parts(raw.as_ptr() as *const i32, count) })
+    }
+
+    /// Zero-copy read for contiguous native-endian `i64` datasets.
+    ///
+    /// Returns a direct `&[i64]` slice — no allocation, no copy.
+    pub fn read_i64_zerocopy(&self) -> Result<&'f [i64], Error> {
+        let raw = self.zerocopy_raw_validated("i64", 8, |dt| {
+            matches!(dt, Datatype::FixedPoint { size: 8, signed: true, .. })
+        })?;
+        check_alignment::<i64>(raw.as_ptr())?;
+        let count = raw.len() / 8;
+        Ok(unsafe { std::slice::from_raw_parts(raw.as_ptr() as *const i64, count) })
+    }
+
+    /// Zero-copy read for contiguous `u8` datasets.
+    ///
+    /// Since `u8` has no endianness or alignment requirements, this works
+    /// for any contiguous byte dataset.
+    pub fn read_u8_zerocopy(&self) -> Result<&'f [u8], Error> {
+        let dt = self.datatype()?;
+        if !matches!(dt, Datatype::FixedPoint { size: 1, signed: false, .. }) {
+            return Err(Error::ZeroCopyTypeMismatch {
+                expected: "u8",
+                actual: format!("{dt:?}"),
+            });
+        }
+        self.read_raw_ref()?
+            .ok_or(Error::ZeroCopyNotContiguous)
+    }
+
+    /// Zero-copy raw byte read for any contiguous dataset.
+    ///
+    /// Returns the raw bytes of any contiguous dataset without type or
+    /// endianness checks.  Equivalent to `read_raw_ref()` but returns an
+    /// error instead of `None` for non-contiguous layouts.
+    pub fn read_raw_zerocopy(&self) -> Result<&'f [u8], Error> {
+        self.read_raw_ref()?
+            .ok_or(Error::ZeroCopyNotContiguous)
+    }
+
+    /// Internal helper: get raw contiguous bytes after validating type and endianness.
+    fn zerocopy_raw_validated(
+        &self,
+        type_name: &'static str,
+        elem_size: usize,
+        type_check: impl FnOnce(&Datatype) -> bool,
+    ) -> Result<&'f [u8], Error> {
+        let dt = self.datatype()?;
+        if !type_check(&dt) {
+            return Err(Error::ZeroCopyTypeMismatch {
+                expected: type_name,
+                actual: format!("{dt:?}"),
+            });
+        }
+        let byte_order = datatype_byte_order(&dt);
+        if !is_native_endian(byte_order) {
+            return Err(Error::ZeroCopyNonNativeEndian);
+        }
+        let raw = self.read_raw_ref()?
+            .ok_or(Error::ZeroCopyNotContiguous)?;
+        debug_assert_eq!(raw.len() % elem_size, 0);
+        Ok(raw)
+    }
+
     /// Read all attributes of this dataset.
     pub fn attrs(&self) -> Result<HashMap<String, AttrValue>, Error> {
         let data = self.file.data.as_bytes();
@@ -451,6 +551,39 @@ impl<'f> Dataset<'f> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Check that a pointer is properly aligned for type `T`.
+fn check_alignment<T>(ptr: *const u8) -> Result<(), Error> {
+    let align = std::mem::align_of::<T>();
+    let addr = ptr as usize;
+    if (addr).is_multiple_of(align) {
+        Ok(())
+    } else {
+        Err(Error::ZeroCopyUnaligned {
+            required: align,
+            actual: addr % align,
+        })
+    }
+}
+
+/// Check whether the given byte order matches the native platform endianness.
+fn is_native_endian(byte_order: DatatypeByteOrder) -> bool {
+    match byte_order {
+        DatatypeByteOrder::LittleEndian => cfg!(target_endian = "little"),
+        DatatypeByteOrder::BigEndian => cfg!(target_endian = "big"),
+        DatatypeByteOrder::Vax => false,
+    }
+}
+
+/// Extract the byte order from a datatype.
+fn datatype_byte_order(dt: &Datatype) -> DatatypeByteOrder {
+    match dt {
+        Datatype::FixedPoint { byte_order, .. }
+        | Datatype::FloatingPoint { byte_order, .. }
+        | Datatype::BitField { byte_order, .. } => byte_order.clone(),
+        _ => DatatypeByteOrder::LittleEndian,
+    }
+}
 
 fn find_message(
     header: &ObjectHeader,

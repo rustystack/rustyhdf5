@@ -303,6 +303,42 @@ fn bench_lazy_open_mmap(c: &mut Criterion) {
     std::fs::remove_file(&path).ok();
 }
 
+// ===========================================================================
+// Bench 9: Zero-copy typed f64 read vs regular read (1M contiguous)
+// ===========================================================================
+
+fn bench_zerocopy_f64_1m(c: &mut Criterion) {
+    let dir = std::env::temp_dir();
+    let path = dir.join("bench_zc_f64_1m.h5");
+    write_contiguous_file(&path);
+
+    c.bench_function("read_1M_f64_zerocopy", |b| {
+        let file = purehdf5::File::open(&path).unwrap();
+        b.iter(|| {
+            let ds = file.dataset("data").unwrap();
+            ds.read_f64_zerocopy().unwrap()
+        })
+    });
+
+    std::fs::remove_file(&path).ok();
+}
+
+fn bench_read_f64_contiguous_1m(c: &mut Criterion) {
+    let dir = std::env::temp_dir();
+    let path = dir.join("bench_read_f64_contig_1m.h5");
+    write_contiguous_file(&path);
+
+    c.bench_function("read_1M_f64_contiguous", |b| {
+        let file = purehdf5::File::open(&path).unwrap();
+        b.iter(|| {
+            let ds = file.dataset("data").unwrap();
+            ds.read_f64().unwrap()
+        })
+    });
+
+    std::fs::remove_file(&path).ok();
+}
+
 criterion_group!(
     benches,
     bench_filereader_contiguous,
@@ -319,5 +355,7 @@ criterion_group!(
     bench_file_open_only_mmap_10mb,
     bench_file_open_only_buffered_10mb,
     bench_lazy_open_mmap,
+    bench_zerocopy_f64_1m,
+    bench_read_f64_contiguous_1m,
 );
 criterion_main!(benches);
