@@ -18,7 +18,7 @@ A pure-Rust HDF5 reader and writer with zero C dependencies. Read and write HDF5
 - **All numeric types** — f32, f64, i32, i64, u8, u64, plus fixed and variable-length strings
 - **Compound/Enum/Array types** — struct-like, enumeration, and fixed-size array datasets
 - **h5py compatible** — files round-trip with Python's h5py library
-- **`no_std` support** — `purehdf5-format` works without the standard library
+- **`no_std` support** — `rustyhdf5-format` works without the standard library
 - **Dense attributes** — automatic fractal heap + B-tree v2 for >8 attributes
 - **SHINES provenance** — SHA-256 content hashing, creator/timestamp metadata, integrity verification
 - **Checksum validation** — Jenkins lookup3 checksum verification on read
@@ -28,7 +28,7 @@ A pure-Rust HDF5 reader and writer with zero C dependencies. Read and write HDF5
 
 Benchmarked on Apple MacBook M3 Max. Comparisons against the C HDF5 library (via hdf5-rust bindings).
 
-| Operation | purehdf5-rs | C HDF5 | Result |
+| Operation | rustyhdf5 | C HDF5 | Result |
 |---|---|---|---|
 | Metadata ops (open + navigate + read attrs) | 0.2–1.5 µs | 18–45 µs | **12–90× faster** |
 | Contiguous writes (1M f64) | 4.8 ms | 8.6 ms | **1.8× faster** |
@@ -49,46 +49,46 @@ Benchmarked on Apple MacBook M3 Max. Comparisons against the C HDF5 library (via
 ┌─────────────────────────────────────────────────────────┐
 │                     Applications                        │
 ├──────────┬──────────────┬───────────┬───────────────────┤
-│ purehdf5 │ purehdf5-py  │ purehdf5- │ purehdf5-netcdf4  │
+│ rustyhdf5 │ rustyhdf5-py  │ rustyhdf5- │ rustyhdf5-netcdf4  │
 │ (Hi-API) │ (PyO3)       │ ann       │                   │
 ├──────────┴──────────────┴───────────┴───────────────────┤
-│                   purehdf5-derive (proc macros)         │
+│                   rustyhdf5-derive (proc macros)         │
 ├──────────┬──────────────┬───────────────────────────────┤
-│ purehdf5 │ purehdf5-    │ purehdf5-accel (SIMD)         │
-│ -io      │ filters      │ purehdf5-gpu   (wgpu)         │
+│ rustyhdf5 │ rustyhdf5-    │ rustyhdf5-accel (SIMD)         │
+│ -io      │ filters      │ rustyhdf5-gpu   (wgpu)         │
 ├──────────┴──────────────┴───────────────────────────────┤
-│              purehdf5-format (no_std core)               │
+│              rustyhdf5-format (no_std core)               │
 ├─────────────────────────────────────────────────────────┤
-│              purehdf5-types (type definitions)           │
+│              rustyhdf5-types (type definitions)           │
 └─────────────────────────────────────────────────────────┘
 ```
 
-- **purehdf5-types** — HDF5 type system definitions (bottom layer, no dependencies)
-- **purehdf5-format** — Binary format parsing and writing (`no_std` compatible core)
-- **purehdf5-io** / **purehdf5-filters** — I/O backends and compression pipeline
-- **purehdf5-accel** / **purehdf5-gpu** — Hardware acceleration (SIMD, compute shaders)
-- **purehdf5** — High-level ergonomic API
-- **purehdf5-derive** / **purehdf5-py** / **purehdf5-netcdf4** / **purehdf5-ann** — Extensions
+- **rustyhdf5-types** — HDF5 type system definitions (bottom layer, no dependencies)
+- **rustyhdf5-format** — Binary format parsing and writing (`no_std` compatible core)
+- **rustyhdf5-io** / **rustyhdf5-filters** — I/O backends and compression pipeline
+- **rustyhdf5-accel** / **rustyhdf5-gpu** — Hardware acceleration (SIMD, compute shaders)
+- **rustyhdf5** — High-level ergonomic API
+- **rustyhdf5-derive** / **rustyhdf5-py** / **rustyhdf5-netcdf4** / **rustyhdf5-ann** — Extensions
 
 ## Crates
 
 | Crate | Description |
 |---|---|
-| `purehdf5-format` | Binary format parsing and writing (`no_std` compatible) |
-| `purehdf5-types` | HDF5 type system definitions |
-| `purehdf5-io` | I/O abstraction layer (buffered, mmap) |
-| `purehdf5-filters` | Filter/compression pipeline (deflate, shuffle, fletcher32) |
-| `purehdf5-derive` | Proc macros for deriving HDF5 traits |
-| `purehdf5` | High-level API for reading and writing files |
-| `purehdf5-netcdf4` | NetCDF-4 compatibility layer |
-| `purehdf5-ann` | HNSW approximate nearest-neighbor index stored in HDF5 |
-| `purehdf5-accel` | SIMD acceleration (NEON, AVX2, AVX-512) |
-| `purehdf5-gpu` | GPU compute via wgpu |
-| `purehdf5-py` | Python bindings via PyO3 |
+| `rustyhdf5-format` | Binary format parsing and writing (`no_std` compatible) |
+| `rustyhdf5-types` | HDF5 type system definitions |
+| `rustyhdf5-io` | I/O abstraction layer (buffered, mmap) |
+| `rustyhdf5-filters` | Filter/compression pipeline (deflate, shuffle, fletcher32) |
+| `rustyhdf5-derive` | Proc macros for deriving HDF5 traits |
+| `rustyhdf5` | High-level API for reading and writing files |
+| `rustyhdf5-netcdf4` | NetCDF-4 compatibility layer |
+| `rustyhdf5-ann` | HNSW approximate nearest-neighbor index stored in HDF5 |
+| `rustyhdf5-accel` | SIMD acceleration (NEON, AVX2, AVX-512) |
+| `rustyhdf5-gpu` | GPU compute via wgpu |
+| `rustyhdf5-py` | Python bindings via PyO3 |
 
 ## Feature Flags
 
-Feature flags on `purehdf5` (the high-level crate):
+Feature flags on `rustyhdf5` (the high-level crate):
 
 | Flag | Default | Description |
 |---|---|---|
@@ -96,14 +96,14 @@ Feature flags on `purehdf5` (the high-level crate):
 | `fast-deflate` | no | Use zlib-ng for faster deflate compression/decompression |
 | `parallel` | no | Parallel chunk I/O via rayon |
 
-Feature flags on `purehdf5-filters`:
+Feature flags on `rustyhdf5-filters`:
 
 | Flag | Default | Description |
 |---|---|---|
 | `fast-deflate` | no | zlib-ng backend for deflate |
 | `apple-compression` | no | Apple Compression Framework backend (macOS/iOS) |
 
-Feature flags on `purehdf5-format`:
+Feature flags on `rustyhdf5-format`:
 
 | Flag | Default | Description |
 |---|---|---|
@@ -121,11 +121,11 @@ Feature flags on `purehdf5-format`:
 
 ```toml
 [dependencies]
-purehdf5 = "0.1"
+rustyhdf5 = "0.1"
 ```
 
 ```rust
-use purehdf5::{File, FileBuilder, AttrValue};
+use rustyhdf5::{File, FileBuilder, AttrValue};
 
 // Write
 let mut builder = FileBuilder::new();
@@ -144,17 +144,17 @@ assert_eq!(values, vec![22.5, 23.1, 21.8]);
 
 ### Low-level format API
 
-For fine-grained control, use `purehdf5-format` directly:
+For fine-grained control, use `rustyhdf5-format` directly:
 
 ```toml
 [dependencies]
-purehdf5-format = "0.1"
+rustyhdf5-format = "0.1"
 ```
 
 #### Writing a dataset
 
 ```rust
-use purehdf5_format::file_writer::{FileWriter, AttrValue};
+use rustyhdf5_format::file_writer::{FileWriter, AttrValue};
 
 let mut fw = FileWriter::new();
 fw.create_dataset("data")
@@ -167,15 +167,15 @@ std::fs::write("output.h5", &bytes).unwrap();
 #### Reading a dataset
 
 ```rust
-use purehdf5_format::signature::find_signature;
-use purehdf5_format::superblock::Superblock;
-use purehdf5_format::object_header::ObjectHeader;
-use purehdf5_format::group_v2::resolve_path_any;
-use purehdf5_format::message_type::MessageType;
-use purehdf5_format::dataspace::Dataspace;
-use purehdf5_format::datatype::Datatype;
-use purehdf5_format::data_layout::DataLayout;
-use purehdf5_format::data_read::{read_raw_data, read_as_f64};
+use rustyhdf5_format::signature::find_signature;
+use rustyhdf5_format::superblock::Superblock;
+use rustyhdf5_format::object_header::ObjectHeader;
+use rustyhdf5_format::group_v2::resolve_path_any;
+use rustyhdf5_format::message_type::MessageType;
+use rustyhdf5_format::dataspace::Dataspace;
+use rustyhdf5_format::datatype::Datatype;
+use rustyhdf5_format::data_layout::DataLayout;
+use rustyhdf5_format::data_read::{read_raw_data, read_as_f64};
 
 let file_data = std::fs::read("output.h5").unwrap();
 let offset = find_signature(&file_data).unwrap();
@@ -203,7 +203,7 @@ assert_eq!(values, vec![1.0, 2.0, 3.0]);
 ### Chunked + compressed dataset
 
 ```rust
-use purehdf5_format::file_writer::FileWriter;
+use rustyhdf5_format::file_writer::FileWriter;
 
 let mut fw = FileWriter::new();
 let data: Vec<f64> = (0..1000).map(|i| i as f64).collect();
@@ -219,7 +219,7 @@ let bytes = fw.finish().unwrap();
 ### Resizable dataset with maxshape
 
 ```rust
-use purehdf5_format::file_writer::FileWriter;
+use rustyhdf5_format::file_writer::FileWriter;
 
 let mut fw = FileWriter::new();
 let data: Vec<f64> = (0..50).map(|i| i as f64).collect();
@@ -235,7 +235,7 @@ let bytes = fw.finish().unwrap();
 ### Groups and attributes
 
 ```rust
-use purehdf5_format::file_writer::{FileWriter, AttrValue};
+use rustyhdf5_format::file_writer::{FileWriter, AttrValue};
 
 let mut fw = FileWriter::new();
 fw.set_root_attr("version", AttrValue::I64(1));
@@ -254,7 +254,7 @@ let bytes = fw.finish().unwrap();
 ### Data provenance
 
 ```rust
-use purehdf5_format::file_writer::FileWriter;
+use rustyhdf5_format::file_writer::FileWriter;
 
 let mut fw = FileWriter::new();
 fw.create_dataset("sensor")
@@ -264,7 +264,7 @@ fw.create_dataset("sensor")
 let bytes = fw.finish().unwrap();
 // The file now contains _provenance_sha256, _provenance_creator,
 // _provenance_timestamp, and _provenance_source attributes.
-// Use purehdf5_format::provenance::verify_dataset() to check integrity.
+// Use rustyhdf5_format::provenance::verify_dataset() to check integrity.
 ```
 
 ## License
