@@ -1,4 +1,4 @@
-# purehdf5-rs
+# rustyHDF5
 
 <!-- badges (coming soon — not yet published to crates.io) -->
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
