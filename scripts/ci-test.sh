@@ -34,16 +34,16 @@ run_step() {
 # 1. Format check
 run_step "cargo fmt --check" cargo fmt --check
 
-# 2. Clippy (exclude purehdf5-py which needs PyO3/Python)
+# 2. Clippy (exclude rustyhdf5-py which needs PyO3/Python)
 run_step "cargo clippy" cargo clippy \
     --workspace \
-    --exclude purehdf5-py \
+    --exclude rustyhdf5-py \
     -- -D warnings
 
-# 3. Tests (exclude purehdf5-py)
+# 3. Tests (exclude rustyhdf5-py)
 run_step "cargo test" cargo test \
     --workspace \
-    --exclude purehdf5-py
+    --exclude rustyhdf5-py
 
 # 4. no_std check
 run_step "check-nostd.sh" "$SCRIPT_DIR/check-nostd.sh"

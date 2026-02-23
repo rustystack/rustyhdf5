@@ -1,0 +1,17 @@
+[package]
+name = "rustyhdf5-netcdf4"
+version = "1.93.0"
+edition = "2024"
+description = "NetCDF-4 read support built on rustyhdf5 — pure Rust, no C dependencies"
+license = "MIT"
+repository = "https://github.com/rustystack/rustyhdf5"
+readme = "README.md"
+keywords = ["netcdf", "netcdf4", "hdf5", "science", "climate"]
+categories = ["parser-implementations", "science"]
+
+[dependencies]
+rustyhdf5 = { path = "../rustyhdf5", version = "1.93.0" }
+rustyhdf5-format = { path = "../rustyhdf5-format", version = "1.93.0" }
+
+[dev-dependencies]
+tempfile = "3"

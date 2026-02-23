@@ -1,0 +1,36 @@
+[package]
+name = "rustyhdf5"
+version = "1.93.0"
+edition = "2024"
+description = "Pure-Rust HDF5 reader/writer — no C dependencies"
+license = "MIT"
+repository = "https://github.com/rustystack/rustyhdf5"
+readme = "README.md"
+keywords = ["hdf5", "science", "data", "binary"]
+categories = ["parser-implementations", "science", "encoding"]
+
+[dependencies]
+rustyhdf5-format = { path = "../rustyhdf5-format", version = "1.93.0" }
+rustyhdf5-io = { path = "../rustyhdf5-io", version = "1.93.0" }
+rayon = { version = "1", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+rustyhdf5-io = { path = "../rustyhdf5-io", version = "1.93.0", features = ["mmap"] }
+rustyhdf5-format = { path = "../rustyhdf5-format", version = "1.93.0", features = ["parallel", "fast-checksum"] }
+rustyhdf5-filters = { path = "../rustyhdf5-filters", version = "1.93.0" }
+
+[[bench]]
+name = "mmap_bench"
+harness = false
+
+[[bench]]
+name = "parallel_bench"
+harness = false
+
+[features]
+default = ["mmap"]
+mmap = ["rustyhdf5-io/mmap"]
+parallel = ["rustyhdf5-format/parallel", "rayon"]
+fast-deflate = ["rustyhdf5-format/fast-deflate"]

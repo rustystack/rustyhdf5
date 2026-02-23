@@ -1,9 +1,0 @@
-[package]
-name = "purehdf5-types"
-version = "0.1.0"
-edition = "2021"
-description = "HDF5 type system definitions for purehdf5"
-license = "MIT"
-repository = "https://github.com/nicosalm/purehdf5-rs"
-keywords = ["hdf5", "types", "science", "data"]
-categories = ["data-structures", "science"]

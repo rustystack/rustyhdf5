@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rustyhdf5"
+version = "1.93.0"
+description = "Python bindings for rustyhdf5 — a pure-Rust HDF5 library"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+dependencies = ["numpy"]
+
+[tool.maturin]
+features = ["extension-module"]

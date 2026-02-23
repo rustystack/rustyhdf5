@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-compilation validation for purehdf5-format.
+# Cross-compilation validation for rustyhdf5-format.
 #
 # Verifies the library builds for multiple targets:
 #   1. no_std (ARM Cortex-M) — core target
@@ -54,7 +54,7 @@ echo ""
 echo "==> [1/5] no_std build (thumbv7em-none-eabihf) — CORE"
 TARGET="thumbv7em-none-eabihf"
 if ensure_target "$TARGET"; then
-    if cargo build --target "$TARGET" -p purehdf5-format --no-default-features 2>&1; then
+    if cargo build --target "$TARGET" -p rustyhdf5-format --no-default-features 2>&1; then
         core_pass "no_std (thumbv7em-none-eabihf)"
     else
         core_fail "no_std (thumbv7em-none-eabihf)"
@@ -66,7 +66,7 @@ fi
 # ---------- 2. Native host build — CORE ----------
 echo ""
 echo "==> [2/5] Native host build — CORE"
-if cargo build -p purehdf5-format 2>&1; then
+if cargo build -p rustyhdf5-format 2>&1; then
     core_pass "native host build"
 else
     core_fail "native host build"
@@ -77,7 +77,7 @@ echo ""
 echo "==> [3/5] aarch64-unknown-linux-gnu"
 TARGET="aarch64-unknown-linux-gnu"
 if ensure_target "$TARGET"; then
-    if cargo build --target "$TARGET" -p purehdf5-format 2>&1; then
+    if cargo build --target "$TARGET" -p rustyhdf5-format 2>&1; then
         pass "aarch64-unknown-linux-gnu"
     else
         fail "aarch64-unknown-linux-gnu"
@@ -91,7 +91,7 @@ echo ""
 echo "==> [4/5] wasm32-unknown-unknown"
 TARGET="wasm32-unknown-unknown"
 if ensure_target "$TARGET"; then
-    if cargo build --target "$TARGET" -p purehdf5-format --no-default-features 2>&1; then
+    if cargo build --target "$TARGET" -p rustyhdf5-format --no-default-features 2>&1; then
         pass "wasm32-unknown-unknown"
     else
         fail "wasm32-unknown-unknown"
@@ -105,7 +105,7 @@ echo ""
 echo "==> [5/5] x86_64-unknown-linux-gnu"
 TARGET="x86_64-unknown-linux-gnu"
 if ensure_target "$TARGET"; then
-    if cargo build --target "$TARGET" -p purehdf5-format 2>&1; then
+    if cargo build --target "$TARGET" -p rustyhdf5-format 2>&1; then
         pass "x86_64-unknown-linux-gnu"
     else
         fail "x86_64-unknown-linux-gnu"

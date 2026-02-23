@@ -1,0 +1,18 @@
+[package]
+name = "rustyhdf5-derive"
+version = "1.93.0"
+edition = "2024"
+description = "Derive macros for rustyhdf5 HDF5 traits"
+license = "MIT"
+repository = "https://github.com/rustystack/rustyhdf5"
+readme = "README.md"
+keywords = ["hdf5", "derive", "macros", "science"]
+categories = ["development-tools::procedural-macro-helpers"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

@@ -1,0 +1,18 @@
+[package]
+name = "rustyhdf5-accel"
+version = "1.93.0"
+edition = "2024"
+description = "SIMD-accelerated operations for rustyhdf5"
+license = "MIT"
+repository = "https://github.com/rustystack/rustyhdf5"
+readme = "README.md"
+keywords = ["hdf5", "simd", "acceleration", "performance"]
+categories = ["science", "algorithms"]
+
+[features]
+default = []
+float16 = ["dep:half"]
+avx512 = []
+
+[dependencies]
+half = { version = "2", optional = true }

@@ -1,0 +1,26 @@
+[package]
+name = "rustyhdf5-filters"
+version = "1.93.0"
+edition = "2024"
+description = "Filter and compression pipeline for rustyhdf5"
+license = "MIT"
+repository = "https://github.com/rustystack/rustyhdf5"
+readme = "README.md"
+keywords = ["hdf5", "compression", "deflate", "filters"]
+categories = ["compression", "science"]
+
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
+miniz_oxide = "0.8"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "deflate_bench"
+harness = false
+
+[features]
+default = []
+fast-deflate = ["flate2/zlib-ng"]
+apple-compression = []

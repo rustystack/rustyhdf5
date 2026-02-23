@@ -1,0 +1,36 @@
+[package]
+name = "rustyhdf5-format"
+version = "1.93.0"
+edition = "2024"
+description = "Pure-Rust HDF5 binary format parsing and writing — no C dependencies"
+license = "MIT"
+repository = "https://github.com/rustystack/rustyhdf5"
+readme = "README.md"
+keywords = ["hdf5", "science", "data", "binary", "no-std"]
+categories = ["parser-implementations", "science", "encoding", "no-std"]
+
+[dependencies]
+byteorder = { version = "1", default-features = false }
+flate2 = { version = "1", default-features = false, features = ["miniz_oxide"], optional = true }
+sha2 = { version = "0.10", default-features = false, optional = true }
+rayon = { version = "1", optional = true }
+crc32fast = { version = "1", optional = true }
+
+[dev-dependencies]
+serde_json = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+rustyhdf5-derive = { path = "../rustyhdf5-derive", version = "1.93.0" }
+
+[[bench]]
+name = "bench"
+harness = false
+
+[features]
+default = ["std", "checksum", "deflate", "provenance"]
+std = []
+checksum = []
+deflate = ["flate2"]
+provenance = ["sha2"]
+parallel = ["rayon", "std"]
+fast-checksum = ["crc32fast"]
+fast-deflate = ["flate2/zlib-ng"]

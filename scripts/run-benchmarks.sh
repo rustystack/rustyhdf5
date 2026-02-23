@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run Criterion benchmarks for purehdf5-format and generate a markdown report.
+# Run Criterion benchmarks for rustyhdf5-format and generate a markdown report.
 #
 # Usage:
 #   ./scripts/run-benchmarks.sh
@@ -13,8 +13,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPORT="$REPO_ROOT/BENCHMARKS.md"
 BENCH_OUTPUT=$(mktemp)
 
-echo "==> Running benchmarks for purehdf5-format ..."
-cargo bench -p purehdf5-format 2>&1 | tee "$BENCH_OUTPUT"
+echo "==> Running benchmarks for rustyhdf5-format ..."
+cargo bench -p rustyhdf5-format 2>&1 | tee "$BENCH_OUTPUT"
 BENCH_EXIT=${PIPESTATUS[0]}
 
 if [ "$BENCH_EXIT" -ne 0 ]; then
@@ -38,7 +38,7 @@ done < "$BENCH_OUTPUT"
 
 # Generate report
 {
-    echo "# purehdf5-format Benchmark Results"
+    echo "# rustyhdf5-format Benchmark Results"
     echo ""
     echo "Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
     echo ""

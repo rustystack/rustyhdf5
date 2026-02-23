@@ -1,0 +1,23 @@
+[package]
+name = "rustyhdf5-py"
+version = "1.93.0"
+edition = "2024"
+description = "Python bindings for rustyhdf5 — a pure-Rust HDF5 library"
+license = "MIT"
+repository = "https://github.com/rustystack/rustyhdf5"
+readme = "README.md"
+keywords = ["hdf5", "python", "bindings", "science"]
+categories = ["api-bindings", "science"]
+
+[lib]
+name = "rustyhdf5"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rustyhdf5_rs = { path = "../rustyhdf5", version = "1.93.0", package = "rustyhdf5" }
+rustyhdf5-format = { path = "../rustyhdf5-format", version = "1.93.0" }
+pyo3 = "0.23"
+numpy = "0.23"
+
+[features]
+extension-module = ["pyo3/extension-module"]
