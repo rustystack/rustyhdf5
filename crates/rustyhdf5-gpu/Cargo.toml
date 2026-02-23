@@ -31,3 +31,7 @@ harness = false
 [features]
 default = ["gpu-wgpu"]
 gpu-wgpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck", "dep:half"]
+
+[package.metadata.docs.rs]
+features = []
+targets = ["x86_64-unknown-linux-gnu"]

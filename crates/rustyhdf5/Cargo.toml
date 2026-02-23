@@ -34,3 +34,7 @@ default = ["mmap"]
 mmap = ["rustyhdf5-io/mmap"]
 parallel = ["rustyhdf5-format/parallel", "rayon"]
 fast-deflate = ["rustyhdf5-format/fast-deflate"]
+
+[package.metadata.docs.rs]
+features = ["mmap"]
+targets = ["x86_64-unknown-linux-gnu"]
