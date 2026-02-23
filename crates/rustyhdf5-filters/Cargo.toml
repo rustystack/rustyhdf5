@@ -10,7 +10,7 @@ keywords = ["hdf5", "compression", "deflate", "filters"]
 categories = ["compression", "science"]
 
 [dependencies]
-flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 miniz_oxide = "0.8"
 
 [dev-dependencies]
