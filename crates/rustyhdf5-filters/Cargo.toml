@@ -21,6 +21,6 @@ name = "deflate_bench"
 harness = false
 
 [features]
-default = []
+default = ["fast-deflate"]
 fast-deflate = ["flate2/zlib-ng"]
 apple-compression = []

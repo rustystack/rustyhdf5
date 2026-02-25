@@ -40,7 +40,8 @@ mod apple {
         state: *mut std::ffi::c_void,
     }
 
-    extern "C" {
+    #[link(name = "compression")]
+    unsafe extern "C" {
         fn compression_stream_init(
             stream: *mut CompressionStream,
             operation: c_int,
@@ -83,6 +84,7 @@ mod apple {
 
         let capacity = if output_hint > 0 { output_hint } else { data.len() * 4 };
         let mut output = vec![0u8; capacity];
+        let mut total_written = 0usize;
 
         unsafe {
             let mut stream = std::mem::zeroed::<CompressionStream>();
@@ -97,24 +99,41 @@ mod apple {
 
             stream.src_ptr = raw_deflate.as_ptr();
             stream.src_size = raw_deflate.len();
-            stream.dst_ptr = output.as_mut_ptr();
-            stream.dst_size = output.len();
 
-            let result = compression_stream_process(&mut stream, COMPRESSION_STREAM_FINALIZE);
-            let bytes_written = output.len() - stream.dst_size;
+            loop {
+                stream.dst_ptr = output.as_mut_ptr().add(total_written);
+                stream.dst_size = output.len() - total_written;
 
-            compression_stream_destroy(&mut stream);
+                let result = compression_stream_process(&mut stream, COMPRESSION_STREAM_FINALIZE);
+                total_written = output.len() - stream.dst_size;
 
-            match result {
-                COMPRESSION_STATUS_END | COMPRESSION_STATUS_OK => {
-                    output.truncate(bytes_written);
-                    Ok(output)
-                }
-                COMPRESSION_STATUS_ERROR => {
-                    Err("apple compression: decompression error".into())
-                }
-                other => {
-                    Err(format!("apple compression: unexpected status {other}"))
+                match result {
+                    COMPRESSION_STATUS_END => {
+                        compression_stream_destroy(&mut stream);
+                        output.truncate(total_written);
+                        return Ok(output);
+                    }
+                    COMPRESSION_STATUS_OK => {
+                        // Need more output space
+                        if stream.dst_size == 0 {
+                            output.resize(output.len() * 2, 0);
+                        } else {
+                            // OK with remaining src=0 means done
+                            if stream.src_size == 0 {
+                                compression_stream_destroy(&mut stream);
+                                output.truncate(total_written);
+                                return Ok(output);
+                            }
+                        }
+                    }
+                    COMPRESSION_STATUS_ERROR => {
+                        compression_stream_destroy(&mut stream);
+                        return Err("apple compression: decompression error".into());
+                    }
+                    other => {
+                        compression_stream_destroy(&mut stream);
+                        return Err(format!("apple compression: unexpected status {other}"));
+                    }
                 }
             }
         }
@@ -130,6 +149,7 @@ mod apple {
         // Compress raw deflate data, then wrap in zlib format.
         let max_size = data.len() + data.len() / 10 + 64;
         let mut raw_output = vec![0u8; max_size];
+        let mut total_written = 0usize;
 
         unsafe {
             let mut stream = std::mem::zeroed::<CompressionStream>();
@@ -144,19 +164,32 @@ mod apple {
 
             stream.src_ptr = data.as_ptr();
             stream.src_size = data.len();
-            stream.dst_ptr = raw_output.as_mut_ptr();
-            stream.dst_size = raw_output.len();
 
-            let result = compression_stream_process(&mut stream, COMPRESSION_STREAM_FINALIZE);
-            let bytes_written = raw_output.len() - stream.dst_size;
+            loop {
+                stream.dst_ptr = raw_output.as_mut_ptr().add(total_written);
+                stream.dst_size = raw_output.len() - total_written;
 
-            compression_stream_destroy(&mut stream);
+                let result = compression_stream_process(&mut stream, COMPRESSION_STREAM_FINALIZE);
+                total_written = raw_output.len() - stream.dst_size;
 
-            if result == COMPRESSION_STATUS_ERROR {
-                return Err("apple compression: compression error".into());
+                match result {
+                    COMPRESSION_STATUS_END => break,
+                    COMPRESSION_STATUS_OK => {
+                        if stream.dst_size == 0 {
+                            raw_output.resize(raw_output.len() * 2, 0);
+                        } else if stream.src_size == 0 {
+                            break;
+                        }
+                    }
+                    _ => {
+                        compression_stream_destroy(&mut stream);
+                        return Err("apple compression: compression error".into());
+                    }
+                }
             }
 
-            raw_output.truncate(bytes_written);
+            compression_stream_destroy(&mut stream);
+            raw_output.truncate(total_written);
         }
 
         // Build zlib-wrapped output: header + raw deflate + adler32
