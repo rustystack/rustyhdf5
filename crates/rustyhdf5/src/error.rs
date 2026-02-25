@@ -18,6 +18,24 @@ pub enum Error {
     MissingMessage(MessageType),
     /// Alignment or size error for zero-copy typed access.
     AlignmentError(String),
+    /// Zero-copy read requires a contiguous dataset layout.
+    ZeroCopyNotContiguous,
+    /// Zero-copy read requires native-endian byte order.
+    ZeroCopyNonNativeEndian,
+    /// Zero-copy type mismatch (requested type vs dataset type).
+    ZeroCopyTypeMismatch {
+        /// The type that was requested.
+        expected: &'static str,
+        /// The actual dataset type description.
+        actual: String,
+    },
+    /// Zero-copy data is not properly aligned for the requested type.
+    ZeroCopyUnaligned {
+        /// Required alignment in bytes.
+        required: usize,
+        /// Actual alignment of the data pointer.
+        actual: usize,
+    },
 }
 
 impl fmt::Display for Error {
@@ -28,6 +46,21 @@ impl fmt::Display for Error {
             Error::NotADataset(path) => write!(f, "not a dataset: {path}"),
             Error::MissingMessage(mt) => write!(f, "missing required message: {mt:?}"),
             Error::AlignmentError(msg) => write!(f, "alignment error: {msg}"),
+            Error::ZeroCopyNotContiguous => {
+                write!(f, "zero-copy read requires contiguous dataset layout")
+            }
+            Error::ZeroCopyNonNativeEndian => {
+                write!(f, "zero-copy read requires native-endian byte order")
+            }
+            Error::ZeroCopyTypeMismatch { expected, actual } => {
+                write!(f, "zero-copy type mismatch: expected {expected}, got {actual}")
+            }
+            Error::ZeroCopyUnaligned { required, actual } => {
+                write!(
+                    f,
+                    "zero-copy alignment error: requires {required}-byte alignment, data aligned to {actual}"
+                )
+            }
         }
     }
 }

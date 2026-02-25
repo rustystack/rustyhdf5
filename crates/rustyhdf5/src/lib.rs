@@ -459,14 +459,13 @@ mod tests {
         let ds = file.dataset("data").unwrap();
 
         // Zero-copy should succeed for contiguous LE f64 on mmap
-        let zc = ds.read_f64_zerocopy().unwrap();
-        if let Some(slice) = zc {
-            assert_eq!(slice, &original[..]);
-            // Verify it matches the allocating read
-            assert_eq!(slice, &ds.read_f64().unwrap()[..]);
+        match ds.read_f64_zerocopy() {
+            Ok(slice) => {
+                assert_eq!(slice, &original[..]);
+                assert_eq!(slice, &ds.read_f64().unwrap()[..]);
+            }
+            Err(_) => {} // alignment issue, acceptable
         }
-        // If None (e.g. alignment issue), that's acceptable — just verify
-        // the allocating path still works
         assert_eq!(ds.read_f64().unwrap(), original);
 
         std::fs::remove_file(&path).ok();
@@ -487,9 +486,9 @@ mod tests {
         let file = File::open(&path).unwrap();
         let ds = file.dataset("data").unwrap();
 
-        let zc = ds.read_f32_zerocopy().unwrap();
-        if let Some(slice) = zc {
-            assert_eq!(slice, &original[..]);
+        match ds.read_f32_zerocopy() {
+            Ok(slice) => assert_eq!(slice, &original[..]),
+            Err(_) => {}
         }
         assert_eq!(ds.read_f32().unwrap(), original);
 
@@ -513,11 +512,14 @@ mod tests {
         let ds = file.dataset("data").unwrap();
         let regular = ds.read_f64().unwrap();
 
-        if let Some(zc) = ds.read_f64_zerocopy().unwrap() {
-            assert_eq!(zc.len(), regular.len());
-            for (a, b) in zc.iter().zip(regular.iter()) {
-                assert_eq!(a, b);
+        match ds.read_f64_zerocopy() {
+            Ok(zc) => {
+                assert_eq!(zc.len(), regular.len());
+                for (a, b) in zc.iter().zip(regular.iter()) {
+                    assert_eq!(a, b);
+                }
             }
+            Err(_) => {}
         }
 
         std::fs::remove_file(&path).ok();

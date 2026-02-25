@@ -560,9 +560,13 @@ impl FileWriter {
                 let oh = build_chunked_dataset_oh(&d.dt, &d.ds, &result.layout_message, result.pipeline_message.as_deref(), &d.attrs, ds_dense_blobs[i].as_ref());
                 ds_blobs2.push(DataBlob { data: result.data_bytes, oh_bytes: oh });
             } else {
+                // Align contiguous data to 8 bytes for zero-copy read support
+                let padding = (8 - (cursor2 % 8)) % 8;
+                cursor2 += padding;
                 let oh = build_dataset_oh(&d.dt, &d.ds, cursor2 as u64, d.raw.len() as u64, &d.attrs, ds_dense_blobs[i].as_ref());
-                let data = d.raw.clone();
-                cursor2 += data.len();
+                let mut data = vec![0u8; padding];
+                data.extend_from_slice(&d.raw);
+                cursor2 += d.raw.len();
                 ds_blobs2.push(DataBlob { data, oh_bytes: oh });
             }
         }
