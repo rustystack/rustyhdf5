@@ -20,6 +20,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "deflate_bench"
 harness = false
 
+[[bench]]
+name = "compression_bench"
+harness = false
+
 [features]
 default = ["fast-deflate"]
 fast-deflate = ["flate2/zlib-ng"]
