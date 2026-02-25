@@ -247,7 +247,71 @@ fn bench_zero_copy_raw_ref(c: &mut Criterion) {
 }
 
 // ===========================================================================
-// Bench 7: File open only (no data read) — mmap vs buffered for 10MB file
+// Bench 7: Zero-copy f64 slice via read_f64_zerocopy (no allocation)
+// ===========================================================================
+
+fn bench_zerocopy_f64_slice(c: &mut Criterion) {
+    let dir = std::env::temp_dir();
+    let path = dir.join("bench_zerocopy_f64_slice.h5");
+    write_contiguous_file(&path);
+
+    c.bench_function("zerocopy_f64_slice_1M", |b| {
+        let file = purehdf5::File::open(&path).unwrap();
+        b.iter(|| {
+            let ds = file.dataset("data").unwrap();
+            ds.read_f64_zerocopy().unwrap()
+        })
+    });
+
+    std::fs::remove_file(&path).ok();
+}
+
+fn bench_zerocopy_f64_mmap_file(c: &mut Criterion) {
+    let dir = std::env::temp_dir();
+    let path = dir.join("bench_zerocopy_f64_mmap_file.h5");
+    write_contiguous_file(&path);
+
+    c.bench_function("zerocopy_f64_mmap_file_1M", |b| {
+        let file = purehdf5::MmapFile::open(&path).unwrap();
+        b.iter(|| {
+            let ds = file.dataset("data").unwrap();
+            ds.read_f64_zerocopy().unwrap()
+        })
+    });
+
+    std::fs::remove_file(&path).ok();
+}
+
+fn bench_zerocopy_vs_copy_f64(c: &mut Criterion) {
+    let dir = std::env::temp_dir();
+    let path = dir.join("bench_zc_vs_copy.h5");
+    write_contiguous_file(&path);
+
+    let file = purehdf5::File::open(&path).unwrap();
+
+    c.bench_function("read_f64_copy_1M", |b| {
+        b.iter(|| {
+            file.dataset("data").unwrap().read_f64().unwrap()
+        })
+    });
+
+    c.bench_function("read_f64_zerocopy_1M", |b| {
+        b.iter(|| {
+            file.dataset("data").unwrap().read_f64_zerocopy().unwrap()
+        })
+    });
+
+    c.bench_function("read_as_slice_f64_1M", |b| {
+        b.iter(|| {
+            file.dataset("data").unwrap().read_as_slice::<f64>().unwrap()
+        })
+    });
+
+    std::fs::remove_file(&path).ok();
+}
+
+// ===========================================================================
+// Bench 8: File open only (no data read) — mmap vs buffered for 10MB file
 // ===========================================================================
 
 fn write_10mb_file(path: &Path) {
@@ -285,7 +349,7 @@ fn bench_file_open_only_buffered_10mb(c: &mut Criterion) {
 }
 
 // ===========================================================================
-// Bench 8: LazyFile::open_mmap convenience
+// Bench 11: LazyFile::open_mmap convenience
 // ===========================================================================
 
 fn bench_lazy_open_mmap(c: &mut Criterion) {
@@ -316,6 +380,9 @@ criterion_group!(
     bench_file_open_mmap,
     bench_file_open_buffered,
     bench_zero_copy_raw_ref,
+    bench_zerocopy_f64_slice,
+    bench_zerocopy_f64_mmap_file,
+    bench_zerocopy_vs_copy_f64,
     bench_file_open_only_mmap_10mb,
     bench_file_open_only_buffered_10mb,
     bench_lazy_open_mmap,

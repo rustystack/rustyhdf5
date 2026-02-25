@@ -321,6 +321,51 @@ impl<'f, R: HDF5Read> LazyDataset<'f, R> {
         Ok(data_read::read_as_f64(&raw, &dt)?)
     }
 
+    /// Zero-copy read of contiguous native-endian `f64` data.
+    ///
+    /// Returns `Some(&[f64])` when the dataset is contiguous and stored as
+    /// little-endian `f64` with proper alignment.  Returns `None` for
+    /// chunked/compact layouts or non-native types — use [`read_f64`] instead.
+    pub fn read_f64_zerocopy(&self) -> Result<Option<&'f [f64]>, Error> {
+        let raw = match self.read_raw_ref()? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let dt = self.datatype()?;
+        Ok(data_read::read_as_f64_zerocopy(raw, &dt))
+    }
+
+    /// Zero-copy read of contiguous native-endian `f32` data.
+    ///
+    /// Returns `Some(&[f32])` when the dataset is contiguous and stored as
+    /// little-endian `f32` with proper alignment.  Returns `None` otherwise.
+    pub fn read_f32_zerocopy(&self) -> Result<Option<&'f [f32]>, Error> {
+        let raw = match self.read_raw_ref()? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let dt = self.datatype()?;
+        Ok(data_read::read_as_f32_zerocopy(raw, &dt))
+    }
+
+    /// Zero-copy read of contiguous raw data.
+    ///
+    /// For contiguous datasets this returns a direct `&[u8]` slice into
+    /// the underlying reader bytes — no allocation.
+    /// Returns `None` for chunked or compact datasets.
+    pub fn read_raw_ref(&self) -> Result<Option<&'f [u8]>, Error> {
+        let dl = self.data_layout()?;
+        let ds = self.dataspace()?;
+        let dt = self.datatype()?;
+        let slice = data_read::read_raw_data_zerocopy(
+            self.file.reader.as_bytes(),
+            &dl,
+            &ds,
+            &dt,
+        )?;
+        Ok(slice)
+    }
+
     /// Read all data as `f32` values.
     pub fn read_f32(&self) -> Result<Vec<f32>, Error> {
         let raw = self.read_raw()?;
