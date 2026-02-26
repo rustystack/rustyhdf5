@@ -256,7 +256,7 @@ fn bench_zerocopy_f64_slice(c: &mut Criterion) {
     write_contiguous_file(&path);
 
     c.bench_function("zerocopy_f64_slice_1M", |b| {
-        let file = purehdf5::File::open(&path).unwrap();
+        let file = rustyhdf5::File::open(&path).unwrap();
         b.iter(|| {
             let ds = file.dataset("data").unwrap();
             ds.read_f64_zerocopy().unwrap()
@@ -272,7 +272,7 @@ fn bench_zerocopy_f64_mmap_file(c: &mut Criterion) {
     write_contiguous_file(&path);
 
     c.bench_function("zerocopy_f64_mmap_file_1M", |b| {
-        let file = purehdf5::MmapFile::open(&path).unwrap();
+        let file = rustyhdf5::MmapFile::open(&path).unwrap();
         b.iter(|| {
             let ds = file.dataset("data").unwrap();
             ds.read_f64_zerocopy().unwrap()
@@ -287,7 +287,7 @@ fn bench_zerocopy_vs_copy_f64(c: &mut Criterion) {
     let path = dir.join("bench_zc_vs_copy.h5");
     write_contiguous_file(&path);
 
-    let file = purehdf5::File::open(&path).unwrap();
+    let file = rustyhdf5::File::open(&path).unwrap();
 
     c.bench_function("read_f64_copy_1M", |b| {
         b.iter(|| {
@@ -377,7 +377,7 @@ fn bench_zerocopy_f64_1m(c: &mut Criterion) {
     write_contiguous_file(&path);
 
     c.bench_function("read_1M_f64_zerocopy", |b| {
-        let file = purehdf5::File::open(&path).unwrap();
+        let file = rustyhdf5::File::open(&path).unwrap();
         b.iter(|| {
             let ds = file.dataset("data").unwrap();
             ds.read_f64_zerocopy().unwrap()
@@ -393,7 +393,7 @@ fn bench_read_f64_contiguous_1m(c: &mut Criterion) {
     write_contiguous_file(&path);
 
     c.bench_function("read_1M_f64_contiguous", |b| {
-        let file = purehdf5::File::open(&path).unwrap();
+        let file = rustyhdf5::File::open(&path).unwrap();
         b.iter(|| {
             let ds = file.dataset("data").unwrap();
             ds.read_f64().unwrap()
