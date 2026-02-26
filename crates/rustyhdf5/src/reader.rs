@@ -150,6 +150,52 @@ impl File {
         })
     }
 
+    /// Read multiple datasets by name, returning raw bytes in request order.
+    ///
+    /// Internally resolves all dataset layouts, sorts by file offset for
+    /// sequential I/O, reads each, then re-orders results to match the
+    /// original request order.
+    pub fn read_multi(&self, names: &[&str]) -> Result<Vec<Vec<u8>>, Error> {
+        // Resolve all datasets and collect metadata
+        struct DsInfo<'a> {
+            request_idx: usize,
+            dataset: Dataset<'a>,
+        }
+
+        let mut infos: Vec<DsInfo<'_>> = Vec::with_capacity(names.len());
+        for (i, name) in names.iter().enumerate() {
+            let ds = self.dataset(name)?;
+            infos.push(DsInfo {
+                request_idx: i,
+                dataset: ds,
+            });
+        }
+
+        // Sort by data layout address for sequential I/O
+        infos.sort_by_key(|info| {
+            info.dataset
+                .data_layout()
+                .ok()
+                .and_then(|dl| match dl {
+                    DataLayout::Contiguous { address, .. } => address,
+                    DataLayout::Chunked { btree_address, .. } => btree_address,
+                    _ => Some(0),
+                })
+                .unwrap_or(0)
+        });
+
+        // Read in file-offset order
+        let mut results: Vec<(usize, Vec<u8>)> = Vec::with_capacity(infos.len());
+        for info in &infos {
+            let raw = info.dataset.read_raw()?;
+            results.push((info.request_idx, raw));
+        }
+
+        // Re-order to match request order
+        results.sort_by_key(|(idx, _)| *idx);
+        Ok(results.into_iter().map(|(_, data)| data).collect())
+    }
+
     /// Returns the raw file bytes.
     pub fn as_bytes(&self) -> &[u8] {
         self.data.as_bytes()
@@ -358,6 +404,72 @@ impl<'f> Dataset<'f> {
         let raw = self.read_raw()?;
         let dt = self.datatype()?;
         Ok(data_read::read_as_strings(&raw, &dt)?)
+    }
+
+    // ----- Selection-based read methods -----
+
+    /// Read selected elements as raw bytes.
+    ///
+    /// Only the elements matching the [`Selection`] are returned. For chunked
+    /// datasets, only intersecting chunks are decompressed.
+    pub fn read_selection(
+        &self,
+        selection: &rustyhdf5_format::selection::Selection,
+    ) -> Result<Vec<u8>, Error> {
+        let dt = self.datatype()?;
+        let ds = self.dataspace()?;
+        let dl = self.data_layout()?;
+        let pipeline = self.filter_pipeline();
+        Ok(data_read::read_raw_data_selection(
+            self.file.data.as_bytes(),
+            &dl,
+            &ds,
+            &dt,
+            pipeline.as_ref(),
+            self.file.offset_size(),
+            self.file.length_size(),
+            selection,
+        )?)
+    }
+
+    /// Read selected elements as `f64` values.
+    pub fn read_f64_selection(
+        &self,
+        selection: &rustyhdf5_format::selection::Selection,
+    ) -> Result<Vec<f64>, Error> {
+        let raw = self.read_selection(selection)?;
+        let dt = self.datatype()?;
+        Ok(data_read::read_as_f64(&raw, &dt)?)
+    }
+
+    /// Read selected elements as `f32` values.
+    pub fn read_f32_selection(
+        &self,
+        selection: &rustyhdf5_format::selection::Selection,
+    ) -> Result<Vec<f32>, Error> {
+        let raw = self.read_selection(selection)?;
+        let dt = self.datatype()?;
+        Ok(data_read::read_as_f32(&raw, &dt)?)
+    }
+
+    /// Read selected elements as `i32` values.
+    pub fn read_i32_selection(
+        &self,
+        selection: &rustyhdf5_format::selection::Selection,
+    ) -> Result<Vec<i32>, Error> {
+        let raw = self.read_selection(selection)?;
+        let dt = self.datatype()?;
+        Ok(data_read::read_as_i32(&raw, &dt)?)
+    }
+
+    /// Read selected elements as `i64` values.
+    pub fn read_i64_selection(
+        &self,
+        selection: &rustyhdf5_format::selection::Selection,
+    ) -> Result<Vec<i64>, Error> {
+        let raw = self.read_selection(selection)?;
+        let dt = self.datatype()?;
+        Ok(data_read::read_as_i64(&raw, &dt)?)
     }
 
     /// Zero-copy read of contiguous raw data.

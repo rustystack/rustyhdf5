@@ -210,7 +210,9 @@ pub mod mmap;
 pub use mmap::{MmapReader, MmapReadWrite};
 
 pub mod prefetch;
+pub mod subfiling;
 pub mod sweep;
+pub mod vol;
 
 /// Configuration for lane-partitioned parallel decompression.
 ///

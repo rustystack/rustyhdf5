@@ -54,6 +54,7 @@ pub mod chunk_cache;
 pub mod chunk_index;
 pub mod chunked_read;
 pub mod chunked_write;
+pub mod dict_encoding;
 pub mod file_writer;
 pub mod metadata_index;
 pub mod object_header_writer;
@@ -89,6 +90,10 @@ pub mod shared_message;
 pub mod signature;
 pub mod superblock;
 pub mod symbol_table;
+pub mod metadata_cache;
+pub mod profiling;
+pub mod property_list;
+pub mod selection;
 pub mod vl_data;
 
 #[cfg(feature = "provenance")]

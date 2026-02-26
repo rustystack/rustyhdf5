@@ -202,11 +202,17 @@ impl core::fmt::Debug for CacheAlignedBuffer {
 /// Coordinate key for a chunk — the N-dimensional offset vector.
 pub type ChunkCoord = Vec<u64>;
 
-/// Default maximum bytes of decompressed chunk data to cache.
-pub const DEFAULT_CACHE_BYTES: usize = 1024 * 1024; // 1 MiB
+/// Default maximum bytes of decompressed chunk data to cache (16 MiB).
+///
+/// Increased from the HDF5 C library default of 1 MiB to better accommodate
+/// modern workloads with large embedding datasets and high-dimensional chunks.
+pub const DEFAULT_CACHE_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
 
 /// Default maximum number of cached decompressed chunks.
-pub const DEFAULT_MAX_SLOTS: usize = 16;
+///
+/// 521 is prime, which provides better hash distribution for the chunk
+/// coordinate map and reduces collision chains compared to power-of-two sizes.
+pub const DEFAULT_MAX_SLOTS: usize = 521;
 
 // ---------------------------------------------------------------------------
 // LRU entry
@@ -286,10 +292,32 @@ pub struct AccessStats {
     pub random_count: u64,
     /// Last detected sweep direction description (informational).
     pub sweep_direction: Option<&'static str>,
+    /// Number of cache hits (decompressed data found in cache).
+    pub hits: u64,
+    /// Number of cache misses (decompressed data not in cache).
+    pub misses: u64,
+    /// Number of LRU evictions performed.
+    pub evictions: u64,
+    /// Total bytes read from cached data.
+    pub bytes_read: u64,
+}
+
+impl AccessStats {
+    /// Cache hit rate as a fraction in [0.0, 1.0].
+    ///
+    /// Returns 0.0 if no accesses have been recorded.
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.hits + self.misses;
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
+    }
 }
 
 impl ChunkCache {
-    /// Create a new chunk cache with default limits (1 MiB, 16 slots).
+    /// Create a new chunk cache with default limits (16 MiB, 521 slots).
     pub fn new() -> Self {
         Self::with_capacity(DEFAULT_CACHE_BYTES, DEFAULT_MAX_SLOTS)
     }
@@ -427,13 +455,21 @@ impl ChunkCache {
         }
         inner.last_coord = Some(coord.to_vec());
 
+        let mut found = None;
         for slot in inner.slots.iter_mut() {
             if slot.coord.as_slice() == coord {
                 slot.last_access = tick;
-                return Some(slot.data.to_vec());
+                found = Some(slot.data.to_vec());
+                break;
             }
         }
-        None
+        if let Some(ref data) = found {
+            inner.stats.hits += 1;
+            inner.stats.bytes_read += data.len() as u64;
+        } else {
+            inner.stats.misses += 1;
+        }
+        found
     }
 
     /// Try to get a reference-counted clone of the aligned buffer for a chunk.
@@ -441,13 +477,21 @@ impl ChunkCache {
         let mut inner = self.inner.lock().unwrap();
         inner.tick += 1;
         let tick = inner.tick;
+        let mut found = None;
         for slot in inner.slots.iter_mut() {
             if slot.coord.as_slice() == coord {
                 slot.last_access = tick;
-                return Some(slot.data.clone());
+                found = Some(slot.data.clone());
+                break;
             }
         }
-        None
+        if let Some(ref data) = found {
+            inner.stats.hits += 1;
+            inner.stats.bytes_read += data.len() as u64;
+        } else {
+            inner.stats.misses += 1;
+        }
+        found
     }
 
     /// Insert decompressed chunk data into the LRU cache.
@@ -493,6 +537,7 @@ impl ChunkCache {
                 .unwrap();
             let removed = inner.slots.swap_remove(lru_idx);
             inner.current_bytes -= removed.data.len();
+            inner.stats.evictions += 1;
         }
 
         inner.current_bytes += data_len;

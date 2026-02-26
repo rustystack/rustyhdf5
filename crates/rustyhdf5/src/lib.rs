@@ -43,7 +43,14 @@ pub use writer::FileBuilder;
 pub use writer::{create_datasets_parallel, DatasetSpec};
 
 // Re-export useful types from rustyhdf5-format for advanced users
-pub use rustyhdf5_format::type_builders::{CompoundTypeBuilder, EnumTypeBuilder};
+pub use rustyhdf5_format::data_layout::VdsMapping;
+pub use rustyhdf5_format::dict_encoding::{DictEncoded, DictionaryEncoder};
+pub use rustyhdf5_format::property_list::{
+    DatasetCreateProps, FileAccessProps, FileCreateProps, lib_version,
+};
+pub use rustyhdf5_format::selection::Selection;
+pub use rustyhdf5_format::superblock::swmr_flags;
+pub use rustyhdf5_format::type_builders::{CompoundTypeBuilder, EnumTypeBuilder, FillTime};
 
 #[cfg(test)]
 mod tests {

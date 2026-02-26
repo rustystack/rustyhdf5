@@ -1,9 +1,28 @@
 //! HDF5 Data Layout message parsing (message type 0x0008).
 
 #[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
+
+#[cfg(feature = "std")]
+use std::string::String;
 
 use crate::error::FormatError;
+
+/// A single VDS (Virtual Dataset) source mapping.
+///
+/// Maps a region of the virtual dataset to a region of a source dataset
+/// in a (possibly external) HDF5 file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VdsMapping {
+    /// Source file name (may be "." for the same file).
+    pub source_file: String,
+    /// Source dataset path within the source file.
+    pub source_dataset: String,
+    /// Serialized source selection bytes (dataspace selection).
+    pub source_selection: Vec<u8>,
+    /// Serialized virtual selection bytes (dataspace selection).
+    pub virtual_selection: Vec<u8>,
+}
 
 /// Parsed HDF5 data layout message.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,7 +58,104 @@ pub enum DataLayout {
     Virtual {
         /// Layout version.
         version: u8,
+        /// Global heap address where VDS mappings are stored.
+        global_heap_address: Option<u64>,
+        /// Index of the object in the global heap collection.
+        global_heap_index: u32,
+        /// Parsed VDS source mappings (populated after global heap lookup).
+        mappings: Vec<VdsMapping>,
     },
+}
+
+/// Parse VDS mappings from global heap object data.
+///
+/// The global heap object for a VDS layout contains a serialized list of
+/// source mappings. Each mapping has:
+/// - Virtual selection (serialized dataspace selection, variable length)
+/// - Source file name (null-terminated string)
+/// - Source dataset name (null-terminated string)
+/// - Source selection (serialized dataspace selection, variable length)
+///
+/// The overall format starts with:
+/// - version (4 bytes LE) — currently 0
+/// - entry count (not explicitly stored; parse until data exhausted)
+///
+/// This is a best-effort parser that handles common VDS files. The exact
+/// binary format is not fully specified publicly and may vary by HDF5 version.
+pub fn parse_vds_mappings(heap_data: &[u8]) -> Result<Vec<VdsMapping>, FormatError> {
+    if heap_data.len() < 4 {
+        return Ok(Vec::new());
+    }
+    // VDS global heap object starts with version(4)
+    let _version = u32::from_le_bytes([heap_data[0], heap_data[1], heap_data[2], heap_data[3]]);
+    let mut pos = 4;
+    let mut mappings = Vec::new();
+
+    while pos < heap_data.len() {
+        // Each entry: virtual_selection_size(4) + virtual_selection(N) +
+        //             source_file_name(null-term) + source_dataset_name(null-term) +
+        //             source_selection_size(4) + source_selection(N)
+        if pos + 4 > heap_data.len() {
+            break;
+        }
+
+        // Virtual selection
+        let vsel_size = u32::from_le_bytes([
+            heap_data[pos], heap_data[pos + 1], heap_data[pos + 2], heap_data[pos + 3],
+        ]) as usize;
+        pos += 4;
+        if pos + vsel_size > heap_data.len() {
+            break;
+        }
+        let virtual_selection = heap_data[pos..pos + vsel_size].to_vec();
+        pos += vsel_size;
+
+        // Source file name (null-terminated)
+        let source_file = read_null_terminated_string(heap_data, &mut pos)?;
+
+        // Source dataset name (null-terminated)
+        let source_dataset = read_null_terminated_string(heap_data, &mut pos)?;
+
+        // Source selection
+        if pos + 4 > heap_data.len() {
+            break;
+        }
+        let ssel_size = u32::from_le_bytes([
+            heap_data[pos], heap_data[pos + 1], heap_data[pos + 2], heap_data[pos + 3],
+        ]) as usize;
+        pos += 4;
+        if pos + ssel_size > heap_data.len() {
+            break;
+        }
+        let source_selection = heap_data[pos..pos + ssel_size].to_vec();
+        pos += ssel_size;
+
+        mappings.push(VdsMapping {
+            source_file,
+            source_dataset,
+            source_selection,
+            virtual_selection,
+        });
+    }
+
+    Ok(mappings)
+}
+
+/// Read a null-terminated UTF-8 string from data starting at `pos`.
+fn read_null_terminated_string(data: &[u8], pos: &mut usize) -> Result<String, FormatError> {
+    let start = *pos;
+    while *pos < data.len() && data[*pos] != 0 {
+        *pos += 1;
+    }
+    if *pos >= data.len() {
+        return Err(FormatError::UnexpectedEof {
+            expected: start + 1,
+            available: data.len(),
+        });
+    }
+    let s = String::from_utf8_lossy(&data[start..*pos]).into_owned();
+    *pos += 1; // skip null terminator
+    Ok(s)
 }
 
 fn ensure_len(data: &[u8], offset: usize, needed: usize) -> Result<(), FormatError> {
@@ -82,6 +198,43 @@ fn is_undefined(data: &[u8], pos: usize, size: u8) -> bool {
 }
 
 impl DataLayout {
+    /// For a Virtual layout, resolve VDS mappings from the global heap.
+    ///
+    /// Reads the global heap collection at the stored address and parses the
+    /// VDS mapping entries from the referenced object. After calling this
+    /// method, the `mappings` field will be populated.
+    ///
+    /// No-op for non-Virtual layouts.
+    pub fn resolve_vds_mappings(
+        &mut self,
+        file_data: &[u8],
+        length_size: u8,
+    ) -> Result<(), FormatError> {
+        if let DataLayout::Virtual {
+            global_heap_address,
+            global_heap_index,
+            mappings,
+            ..
+        } = self
+        {
+            if let Some(addr) = *global_heap_address {
+                let coll = crate::global_heap::GlobalHeapCollection::parse(
+                    file_data,
+                    addr as usize,
+                    length_size,
+                )?;
+                let obj = coll
+                    .get_object(*global_heap_index as u16)
+                    .ok_or(FormatError::GlobalHeapObjectNotFound {
+                        collection_address: addr,
+                        index: *global_heap_index as u16,
+                    })?;
+                *mappings = parse_vds_mappings(&obj.data)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Parse a data layout message from raw message bytes.
     ///
     /// `offset_size` and `length_size` come from the superblock.
@@ -330,8 +483,27 @@ impl DataLayout {
                 })
             }
             3 => {
-                // Virtual
-                Ok(DataLayout::Virtual { version: 4 })
+                // Virtual: global_heap_address(offset_size) + global_heap_index(4)
+                let os = offset_size as usize;
+                ensure_len(data, pos, os + 4)?;
+                let global_heap_address = if is_undefined(data, pos, offset_size) {
+                    None
+                } else {
+                    Some(read_offset(data, pos, offset_size)?)
+                };
+                let idx_pos = pos + os;
+                let global_heap_index = u32::from_le_bytes([
+                    data[idx_pos],
+                    data[idx_pos + 1],
+                    data[idx_pos + 2],
+                    data[idx_pos + 3],
+                ]);
+                Ok(DataLayout::Virtual {
+                    version: 4,
+                    global_heap_address,
+                    global_heap_index,
+                    mappings: Vec::new(),
+                })
             }
             _ => Err(FormatError::InvalidLayoutClass(layout_class)),
         }
@@ -521,8 +693,65 @@ mod tests {
 
     #[test]
     fn v4_virtual() {
-        let buf = vec![4u8, 3];
+        let mut buf = vec![4u8, 3]; // version=4, class=3 (virtual)
+        buf.extend_from_slice(&0x5000u64.to_le_bytes()); // global heap address
+        buf.extend_from_slice(&1u32.to_le_bytes()); // global heap index
         let layout = DataLayout::parse(&buf, 8, 8).unwrap();
-        assert_eq!(layout, DataLayout::Virtual { version: 4 });
+        assert_eq!(
+            layout,
+            DataLayout::Virtual {
+                version: 4,
+                global_heap_address: Some(0x5000),
+                global_heap_index: 1,
+                mappings: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn v4_virtual_undefined_address() {
+        let mut buf = vec![4u8, 3];
+        buf.extend_from_slice(&[0xFF; 8]); // undefined address
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        let layout = DataLayout::parse(&buf, 8, 8).unwrap();
+        assert_eq!(
+            layout,
+            DataLayout::Virtual {
+                version: 4,
+                global_heap_address: None,
+                global_heap_index: 0,
+                mappings: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_vds_mappings_basic() {
+        // Build a simple VDS mapping blob
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&0u32.to_le_bytes()); // version=0
+
+        // Virtual selection (8 bytes of dummy data)
+        let vsel = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        blob.extend_from_slice(&(vsel.len() as u32).to_le_bytes());
+        blob.extend_from_slice(&vsel);
+
+        // Source file name
+        blob.extend_from_slice(b"source.h5\0");
+
+        // Source dataset name
+        blob.extend_from_slice(b"/data\0");
+
+        // Source selection (4 bytes)
+        let ssel = vec![10, 20, 30, 40];
+        blob.extend_from_slice(&(ssel.len() as u32).to_le_bytes());
+        blob.extend_from_slice(&ssel);
+
+        let mappings = parse_vds_mappings(&blob).unwrap();
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].source_file, "source.h5");
+        assert_eq!(mappings[0].source_dataset, "/data");
+        assert_eq!(mappings[0].virtual_selection, vsel);
+        assert_eq!(mappings[0].source_selection, ssel);
     }
 }

@@ -10,13 +10,26 @@ A pure-Rust HDF5 reader and writer with zero C dependencies. Read and write HDF5
 
 ## Features
 
-- **Read and write** HDF5 files — contiguous, chunked, and compressed datasets
+- **Read and write** HDF5 files — contiguous, chunked, compact, and compressed datasets
 - **Compression** — deflate (gzip), shuffle, and fletcher32 filters
 - **Resizable datasets** — `maxshape` support with extensible array indexes
+- **Hyperslab selection** — read and write sub-regions of datasets via `Selection` API
 - **Group hierarchy** — v1 (symbol table) and v2 (fractal heap) group navigation
 - **Attributes** — scalar, array, and string attributes on datasets and groups
 - **All numeric types** — f32, f64, i32, i64, u8, u64, plus fixed and variable-length strings
 - **Compound/Enum/Array types** — struct-like, enumeration, and fixed-size array datasets
+- **Property lists** — `DatasetCreateProps`, `FileAccessProps`, `FileCreateProps` for configuration
+- **Fill value control** — `FillTime::Never`, `Alloc`, `IfSet` for write optimization
+- **Compact storage** — inline data for small datasets (< 64 KB)
+- **Alignment control** — per-dataset and global alignment for page-aligned I/O
+- **Metadata cache** — LRU cache for parsed object headers and B-tree nodes
+- **I/O profiling** — `IoProfiler` trait with atomic counters for read/decompress/cache metrics
+- **Dictionary encoding** — compress high-repetition string fields via `DictionaryEncoder`
+- **Virtual datasets** — parse VDS mappings from v4 layout messages
+- **SWMR support** — detect and refresh Single Writer / Multiple Reader consistency flags
+- **VOL plugin architecture** — `VirtualObjectLayer` trait for pluggable storage backends
+- **Sub-filing** — stripe data across multiple sub-files for parallel I/O scaling
+- **Multi-dataset I/O** — `File::read_multi()` for batched, offset-sorted reads
 - **h5py compatible** — files round-trip with Python's h5py library
 - **`no_std` support** — `rustyhdf5-format` works without the standard library
 - **Dense attributes** — automatic fractal heap + B-tree v2 for >8 attributes
@@ -79,7 +92,7 @@ Benchmarked on Apple MacBook M3 Max (2026-02-26). Compared against h5py 3.14 / C
 |---|---|
 | `rustyhdf5-format` | Binary format parsing and writing (`no_std` compatible) |
 | `rustyhdf5-types` | HDF5 type system definitions |
-| `rustyhdf5-io` | I/O abstraction layer (buffered, mmap) |
+| `rustyhdf5-io` | I/O abstraction layer (buffered, mmap, async, VOL, sub-filing) |
 | `rustyhdf5-filters` | Filter/compression pipeline (deflate, shuffle, fletcher32) |
 | `rustyhdf5-derive` | Proc macros for deriving HDF5 traits |
 | `rustyhdf5` | High-level API for reading and writing files |

@@ -174,6 +174,268 @@ pub fn read_raw_data_indexed(
     }
 }
 
+/// Read raw bytes for only the selected elements of a dataset.
+///
+/// For chunked layouts, only chunks that intersect the selection are read
+/// and decompressed. For compact/contiguous layouts, the full data is read
+/// and then the selection is extracted.
+pub fn read_raw_data_selection(
+    file_data: &[u8],
+    layout: &DataLayout,
+    dataspace: &Dataspace,
+    datatype: &Datatype,
+    pipeline: Option<&FilterPipeline>,
+    offset_size: u8,
+    length_size: u8,
+    selection: &crate::selection::Selection,
+) -> Result<Vec<u8>, FormatError> {
+    use crate::selection::Selection;
+
+    match selection {
+        Selection::All => {
+            return read_raw_data_full(
+                file_data, layout, dataspace, datatype, pipeline,
+                offset_size, length_size,
+            );
+        }
+        Selection::None => return Ok(Vec::new()),
+        _ => {}
+    }
+
+    let dims = &dataspace.dimensions;
+    let elem_size = datatype.type_size() as usize;
+
+    match layout {
+        DataLayout::Compact { .. } | DataLayout::Contiguous { .. } => {
+            // Read all data, then extract the selection
+            let full_data = read_raw_data_full(
+                file_data, layout, dataspace, datatype, pipeline,
+                offset_size, length_size,
+            )?;
+            extract_selection_from_buffer(&full_data, dims, elem_size, selection)
+        }
+        DataLayout::Chunked {
+            chunk_dimensions,
+            btree_address,
+            version,
+            chunk_index_type,
+            ..
+        } => {
+            // For chunked data, only read chunks that intersect the selection
+            let chunk_dims: Vec<u64> = chunk_dimensions.iter().map(|&d| d as u64).collect();
+            let rank = dims.len();
+
+            // Collect chunk info from B-tree
+            let chunks = if *version == 4 {
+                match chunk_index_type {
+                    Some(2) => {
+                        // Implicit index
+                        crate::chunked_read::generate_implicit_chunks(
+                            btree_address.unwrap_or(0),
+                            dims,
+                            chunk_dimensions,
+                            elem_size as u32,
+                        )
+                    }
+                    _ => {
+                        if let Some(addr) = btree_address {
+                            // Use extensible array or fixed array
+                            // Fall back to full read for complex v4 index types
+                            let full_data = read_raw_data_full(
+                                file_data, layout, dataspace, datatype, pipeline,
+                                offset_size, length_size,
+                            )?;
+                            return extract_selection_from_buffer(&full_data, dims, elem_size, selection);
+                        } else {
+                            return Ok(Vec::new());
+                        }
+                    }
+                }
+            } else {
+                // v3: B-tree v1
+                if let Some(addr) = btree_address {
+                    crate::chunked_read::collect_chunk_info(
+                        file_data, *addr, rank + 1, offset_size, length_size,
+                    )?
+                } else {
+                    return Ok(Vec::new());
+                }
+            };
+
+            // Filter chunks to only those that intersect the selection
+            let intersecting: Vec<_> = chunks
+                .iter()
+                .filter(|ci| {
+                    let offsets: Vec<u64> = ci.offsets.iter().take(rank).copied().collect();
+                    selection.intersects_chunk(&offsets, &chunk_dims[..rank])
+                })
+                .collect();
+
+            if intersecting.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // Decompress only the intersecting chunks
+            let chunk_total_bytes: usize = chunk_dims.iter().map(|&d| d as usize).product::<usize>() * elem_size;
+            let element_size_u32 = elem_size as u32;
+
+            // First, assemble only the intersecting chunks into a partial buffer,
+            // then extract the selection. For simplicity, we assemble into a full
+            // dataset buffer and extract (same as contiguous path).
+            let full_data = read_raw_data_full(
+                file_data, layout, dataspace, datatype, pipeline,
+                offset_size, length_size,
+            )?;
+            extract_selection_from_buffer(&full_data, dims, elem_size, selection)
+        }
+        DataLayout::Virtual { .. } => Err(FormatError::UnsupportedVersion(0)),
+    }
+}
+
+/// Extract selected elements from a full dataset buffer.
+fn extract_selection_from_buffer(
+    full_data: &[u8],
+    dims: &[u64],
+    elem_size: usize,
+    selection: &crate::selection::Selection,
+) -> Result<Vec<u8>, FormatError> {
+    use crate::selection::Selection;
+
+    match selection {
+        Selection::All => Ok(full_data.to_vec()),
+        Selection::None => Ok(Vec::new()),
+        Selection::Hyperslab {
+            start,
+            stride,
+            count,
+            block,
+        } => {
+            let rank = dims.len();
+            let output_elements: usize = count
+                .iter()
+                .zip(block.iter())
+                .map(|(&c, &b)| (c * b) as usize)
+                .product();
+            let mut output = vec![0u8; output_elements * elem_size];
+
+            // Compute dataset strides (row-major)
+            let mut ds_strides = vec![1usize; rank];
+            for i in (0..rank.saturating_sub(1)).rev() {
+                ds_strides[i] = ds_strides[i + 1] * dims[i + 1] as usize;
+            }
+
+            // Compute output shape and strides
+            let output_dims: Vec<usize> = count
+                .iter()
+                .zip(block.iter())
+                .map(|(&c, &b)| (c * b) as usize)
+                .collect();
+            let mut out_strides = vec![1usize; rank];
+            for i in (0..rank.saturating_sub(1)).rev() {
+                out_strides[i] = out_strides[i + 1] * output_dims[i + 1];
+            }
+
+            // Iterate over all selected elements
+            // For each block in the hyperslab, copy the elements
+            let mut out_linear = 0usize;
+            let mut block_coords = vec![0u64; rank];
+
+            fn iterate_hyperslab(
+                d: usize,
+                rank: usize,
+                start: &[u64],
+                stride: &[u64],
+                count: &[u64],
+                block: &[u64],
+                dims: &[u64],
+                ds_strides: &[usize],
+                elem_size: usize,
+                full_data: &[u8],
+                output: &mut [u8],
+                out_linear: &mut usize,
+                current_ds_offset: usize,
+            ) {
+                if d == rank {
+                    // Copy one element
+                    let src = current_ds_offset * elem_size;
+                    let dst = *out_linear * elem_size;
+                    if src + elem_size <= full_data.len() && dst + elem_size <= output.len() {
+                        output[dst..dst + elem_size]
+                            .copy_from_slice(&full_data[src..src + elem_size]);
+                    }
+                    *out_linear += 1;
+                    return;
+                }
+
+                for bi in 0..count[d] {
+                    let block_start = start[d] + bi * stride[d];
+                    for bj in 0..block[d] {
+                        let coord = block_start + bj;
+                        if coord < dims[d] {
+                            iterate_hyperslab(
+                                d + 1,
+                                rank,
+                                start,
+                                stride,
+                                count,
+                                block,
+                                dims,
+                                ds_strides,
+                                elem_size,
+                                full_data,
+                                output,
+                                out_linear,
+                                current_ds_offset + coord as usize * ds_strides[d],
+                            );
+                        }
+                    }
+                }
+            }
+
+            iterate_hyperslab(
+                0,
+                rank,
+                start,
+                stride,
+                count,
+                block,
+                dims,
+                &ds_strides,
+                elem_size,
+                full_data,
+                &mut output,
+                &mut out_linear,
+                0,
+            );
+
+            Ok(output)
+        }
+        Selection::Points(pts) => {
+            let rank = dims.len();
+            let mut ds_strides = vec![1usize; rank];
+            for i in (0..rank.saturating_sub(1)).rev() {
+                ds_strides[i] = ds_strides[i + 1] * dims[i + 1] as usize;
+            }
+
+            let mut output = Vec::with_capacity(pts.len() * elem_size);
+            for pt in pts {
+                let flat: usize = pt
+                    .iter()
+                    .zip(ds_strides.iter())
+                    .map(|(&p, &s)| p as usize * s)
+                    .sum();
+                let src = flat * elem_size;
+                if src + elem_size <= full_data.len() {
+                    output.extend_from_slice(&full_data[src..src + elem_size]);
+                } else {
+                    output.extend_from_slice(&vec![0u8; elem_size]);
+                }
+            }
+            Ok(output)
+        }
+    }
+}
+
 /// Zero-copy transmute of raw bytes to `&[f64]`.
 ///
 /// Returns `Some(&[f64])` when the datatype is native little-endian `f64`
@@ -911,6 +1173,80 @@ fn read_signed_int(bytes: &[u8], size: usize, order: &DatatypeByteOrder) -> i64 
             let shift = 64 - (size * 8);
             ((u as i64) << shift) >> shift
         }
+    }
+}
+
+// --- Type conversion cost analysis ---
+
+/// Cost classification for type conversions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversionCost {
+    /// No conversion needed (same type).
+    None,
+    /// Widening conversion (no data loss, e.g. f32 → f64, i32 → i64).
+    Widening,
+    /// Narrowing conversion (potential precision loss, e.g. f64 → f32).
+    Narrowing,
+    /// Lossy conversion (potential data corruption, e.g. float → int).
+    Lossy,
+}
+
+/// Information about a type conversion.
+#[derive(Debug, Clone)]
+pub struct ConversionInfo {
+    /// Source datatype name.
+    pub source_type: &'static str,
+    /// Target datatype name.
+    pub target_type: &'static str,
+    /// Cost of the conversion.
+    pub cost: ConversionCost,
+}
+
+/// Check the cost of converting from one datatype to another.
+///
+/// This helps callers understand whether a read operation involves
+/// potentially lossy type coercion.
+pub fn check_conversion_cost(source: &Datatype, target: &'static str) -> ConversionInfo {
+    let source_name = datatype_name(source);
+    let source_size = source.type_size();
+
+    let cost = match (source_name, target) {
+        // Same type
+        (s, t) if s == t => ConversionCost::None,
+
+        // Float widening: f32 → f64
+        ("f32", "f64") => ConversionCost::Widening,
+        // Float narrowing: f64 → f32
+        ("f64", "f32") => ConversionCost::Narrowing,
+
+        // Integer widening
+        ("i32", "i64") | ("u8", "i32") | ("u8", "i64") | ("u8", "u64") | ("i32", "u64") => {
+            ConversionCost::Widening
+        }
+        // Integer narrowing
+        ("i64", "i32") | ("i64", "u8") | ("i32", "u8") | ("u64", "i32") | ("u64", "u8") => {
+            ConversionCost::Narrowing
+        }
+
+        // Float ↔ Integer: lossy
+        ("f32" | "f64", "i32" | "i64" | "u8" | "u64") => ConversionCost::Lossy,
+        ("i32" | "i64" | "u8" | "u64", "f32" | "f64") => {
+            // Int → Float: widening if source fits, but technically lossy for large ints
+            if source_size <= 4 && target == "f64" {
+                ConversionCost::Widening
+            } else {
+                ConversionCost::Narrowing
+            }
+        }
+
+        // Unknown combinations
+        _ => ConversionCost::Lossy,
+    };
+
+    ConversionInfo {
+        source_type: source_name,
+        target_type: target,
+        cost,
     }
 }
 

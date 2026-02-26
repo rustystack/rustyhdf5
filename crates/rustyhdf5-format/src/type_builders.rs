@@ -12,6 +12,38 @@ use crate::datatype::{
     CharacterSet, CompoundMember, Datatype, DatatypeByteOrder, EnumMember, StringPadding,
 };
 
+/// Controls when fill values are written to dataset storage.
+///
+/// Corresponds to the HDF5 fill value message's "fill time" field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillTime {
+    /// Never write fill values (0x02). Avoids initialization overhead
+    /// for datasets that will be fully written before any read.
+    Never,
+    /// Write fill values at allocation time (0x0a). This is the default
+    /// and matches the HDF5 C library's behavior.
+    Alloc,
+    /// Write fill values only when the fill value has been explicitly set (0x06).
+    IfSet,
+}
+
+impl Default for FillTime {
+    fn default() -> Self {
+        FillTime::Alloc
+    }
+}
+
+impl FillTime {
+    /// Serialize to the byte used in the fill value message (version 3).
+    pub fn to_byte(self) -> u8 {
+        match self {
+            FillTime::Never => 0x02,
+            FillTime::Alloc => 0x0a,
+            FillTime::IfSet => 0x06,
+        }
+    }
+}
+
 // ---- Datatype constructors ----
 
 pub fn make_f64_type() -> Datatype {
@@ -328,6 +360,13 @@ pub struct DatasetBuilder {
     pub(crate) data: Option<Vec<u8>>,
     pub(crate) attrs: Vec<(String, AttrValue)>,
     pub(crate) chunk_options: ChunkOptions,
+    /// Controls when fill values are written. Default is `FillTime::Alloc`.
+    pub(crate) fill_time: FillTime,
+    /// Use compact (inline) storage: data is stored in the object header.
+    /// Only valid when raw data is <= 65536 bytes and dataset is not chunked.
+    pub(crate) compact: bool,
+    /// Per-dataset alignment in bytes (0 = no special alignment).
+    pub(crate) alignment: usize,
     #[cfg(feature = "provenance")]
     pub(crate) provenance: Option<ProvenanceConfig>,
 }
@@ -342,6 +381,9 @@ impl DatasetBuilder {
             data: None,
             attrs: Vec::new(),
             chunk_options: ChunkOptions::default(),
+            fill_time: FillTime::default(),
+            compact: false,
+            alignment: 0,
             #[cfg(feature = "provenance")]
             provenance: None,
         }
@@ -504,6 +546,34 @@ impl DatasetBuilder {
     /// Enable fletcher32 checksum.
     pub fn with_fletcher32(&mut self) -> &mut Self {
         self.chunk_options.fletcher32 = true;
+        self
+    }
+
+    /// Set the fill time policy for this dataset.
+    ///
+    /// `FillTime::Never` avoids the overhead of zero-initializing storage,
+    /// which is beneficial for datasets that will be fully written.
+    pub fn fill_time(&mut self, fill_time: FillTime) -> &mut Self {
+        self.fill_time = fill_time;
+        self
+    }
+
+    /// Use compact (inline) storage for this dataset.
+    ///
+    /// The raw data is stored directly in the dataset's object header rather
+    /// than as a separate data blob. Only effective when raw data <= 65536 bytes
+    /// and the dataset is not chunked.
+    pub fn compact(&mut self) -> &mut Self {
+        self.compact = true;
+        self
+    }
+
+    /// Set per-dataset data alignment in bytes.
+    ///
+    /// The dataset's raw data will be padded to start at a file offset that
+    /// is a multiple of `bytes`. Useful for page-aligned I/O (e.g., 4096).
+    pub fn align(&mut self, bytes: usize) -> &mut Self {
+        self.alignment = bytes;
         self
     }
 

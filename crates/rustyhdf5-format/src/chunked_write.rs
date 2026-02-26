@@ -670,6 +670,134 @@ pub fn build_chunked_data_at_ext(
     })
 }
 
+/// Write selected elements into an existing in-memory dataset buffer.
+///
+/// This performs a read-modify-write on the full buffer: elements matching
+/// the selection are overwritten with the provided `new_data`. The buffer
+/// must be a complete, uncompressed dataset of the given shape.
+///
+/// This is the in-memory equivalent of partial hyperslab writes. The caller
+/// is responsible for re-chunking and re-compressing the buffer afterward.
+pub fn write_selection_to_buffer(
+    buffer: &mut [u8],
+    dims: &[u64],
+    elem_size: usize,
+    selection: &crate::selection::Selection,
+    new_data: &[u8],
+) {
+    use crate::selection::Selection;
+
+    match selection {
+        Selection::All => {
+            let len = buffer.len().min(new_data.len());
+            buffer[..len].copy_from_slice(&new_data[..len]);
+        }
+        Selection::None => {}
+        Selection::Hyperslab {
+            start,
+            stride,
+            count,
+            block,
+        } => {
+            let rank = dims.len();
+            let mut ds_strides = vec![1usize; rank];
+            for i in (0..rank.saturating_sub(1)).rev() {
+                ds_strides[i] = ds_strides[i + 1] * dims[i + 1] as usize;
+            }
+
+            let mut src_offset = 0usize;
+
+            fn write_hyperslab(
+                d: usize,
+                rank: usize,
+                start: &[u64],
+                stride: &[u64],
+                count: &[u64],
+                block: &[u64],
+                dims: &[u64],
+                ds_strides: &[usize],
+                elem_size: usize,
+                buffer: &mut [u8],
+                new_data: &[u8],
+                src_offset: &mut usize,
+                current_ds_offset: usize,
+            ) {
+                if d == rank {
+                    let dst = current_ds_offset * elem_size;
+                    let src = *src_offset * elem_size;
+                    if dst + elem_size <= buffer.len() && src + elem_size <= new_data.len() {
+                        buffer[dst..dst + elem_size]
+                            .copy_from_slice(&new_data[src..src + elem_size]);
+                    }
+                    *src_offset += 1;
+                    return;
+                }
+
+                for bi in 0..count[d] {
+                    let block_start = start[d] + bi * stride[d];
+                    for bj in 0..block[d] {
+                        let coord = block_start + bj;
+                        if coord < dims[d] {
+                            write_hyperslab(
+                                d + 1,
+                                rank,
+                                start,
+                                stride,
+                                count,
+                                block,
+                                dims,
+                                ds_strides,
+                                elem_size,
+                                buffer,
+                                new_data,
+                                src_offset,
+                                current_ds_offset + coord as usize * ds_strides[d],
+                            );
+                        }
+                    }
+                }
+            }
+
+            write_hyperslab(
+                0,
+                rank,
+                start,
+                stride,
+                count,
+                block,
+                dims,
+                &ds_strides,
+                elem_size,
+                buffer,
+                new_data,
+                &mut src_offset,
+                0,
+            );
+        }
+        Selection::Points(pts) => {
+            let rank = dims.len();
+            let mut ds_strides = vec![1usize; rank];
+            for i in (0..rank.saturating_sub(1)).rev() {
+                ds_strides[i] = ds_strides[i + 1] * dims[i + 1] as usize;
+            }
+
+            for (pi, pt) in pts.iter().enumerate() {
+                let flat: usize = pt
+                    .iter()
+                    .zip(ds_strides.iter())
+                    .map(|(&p, &s)| p as usize * s)
+                    .sum();
+                let dst = flat * elem_size;
+                let src = pi * elem_size;
+                if dst + elem_size <= buffer.len() && src + elem_size <= new_data.len() {
+                    buffer[dst..dst + elem_size]
+                        .copy_from_slice(&new_data[src..src + elem_size]);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

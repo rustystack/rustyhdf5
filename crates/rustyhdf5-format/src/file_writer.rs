@@ -16,7 +16,7 @@ use crate::metadata_index::{DatasetMetadata, MetadataBlock, MetadataIndex};
 use crate::object_header_writer::ObjectHeaderWriter;
 use crate::superblock::Superblock;
 use crate::type_builders::{
-    build_attr_message, DatasetBuilder, FinishedGroup, GroupBuilder,
+    build_attr_message, DatasetBuilder, FillTime, FinishedGroup, GroupBuilder,
 };
 
 // Re-export public types that moved to type_builders for API compatibility.
@@ -42,11 +42,12 @@ pub(crate) fn build_chunked_dataset_oh(
     pipeline_message: Option<&[u8]>,
     attrs: &[AttributeMessage],
     dense_blob: Option<&DenseAttrBlob>,
+    fill_time: FillTime,
 ) -> Vec<u8> {
     let mut w = ObjectHeaderWriter::new();
     w.add_message_with_flags(MessageType::Datatype, dt.serialize(), 0x01);
     w.add_message(MessageType::Dataspace, ds.serialize(LENGTH_SIZE));
-    w.add_message_with_flags(MessageType::FillValue, vec![3, 0x0a], 0x01);
+    w.add_message_with_flags(MessageType::FillValue, vec![3, fill_time.to_byte()], 0x01);
     w.add_message(MessageType::DataLayout, layout_message.to_vec());
     if let Some(pm) = pipeline_message {
         w.add_message(MessageType::FilterPipeline, pm.to_vec());
@@ -68,16 +69,47 @@ pub(crate) fn build_dataset_oh(
     data_size: u64,
     attrs: &[AttributeMessage],
     dense_blob: Option<&DenseAttrBlob>,
+    fill_time: FillTime,
 ) -> Vec<u8> {
     let mut w = ObjectHeaderWriter::new();
     w.add_message_with_flags(MessageType::Datatype, dt.serialize(), 0x01);
     w.add_message(MessageType::Dataspace, ds.serialize(LENGTH_SIZE));
-    w.add_message_with_flags(MessageType::FillValue, vec![3, 0x0a], 0x01);
+    w.add_message_with_flags(MessageType::FillValue, vec![3, fill_time.to_byte()], 0x01);
     let mut dl = Vec::new();
     dl.push(4); // version
     dl.push(1); // class = contiguous
     dl.extend_from_slice(&data_addr.to_le_bytes());
     dl.extend_from_slice(&data_size.to_le_bytes());
+    w.add_message(MessageType::DataLayout, dl);
+    if let Some(blob) = dense_blob {
+        w.add_message(MessageType::AttributeInfo, blob.attr_info_message.clone());
+    } else {
+        for attr in attrs {
+            w.add_message(MessageType::Attribute, attr.serialize(LENGTH_SIZE));
+        }
+    }
+    w.serialize()
+}
+
+/// Build a compact dataset object header where data is stored inline.
+pub(crate) fn build_compact_dataset_oh(
+    dt: &Datatype,
+    ds: &Dataspace,
+    data: &[u8],
+    attrs: &[AttributeMessage],
+    dense_blob: Option<&DenseAttrBlob>,
+    fill_time: FillTime,
+) -> Vec<u8> {
+    let mut w = ObjectHeaderWriter::new();
+    w.add_message_with_flags(MessageType::Datatype, dt.serialize(), 0x01);
+    w.add_message(MessageType::Dataspace, ds.serialize(LENGTH_SIZE));
+    w.add_message_with_flags(MessageType::FillValue, vec![3, fill_time.to_byte()], 0x01);
+    // Compact layout message: version=4, class=0, u16 size, inline data
+    let mut dl = Vec::new();
+    dl.push(4); // version
+    dl.push(0); // class = compact
+    dl.extend_from_slice(&(data.len() as u16).to_le_bytes());
+    dl.extend_from_slice(data);
     w.add_message(MessageType::DataLayout, dl);
     if let Some(blob) = dense_blob {
         w.add_message(MessageType::AttributeInfo, blob.attr_info_message.clone());
@@ -347,6 +379,11 @@ pub struct FileWriter {
     root_datasets: Vec<DatasetBuilder>,
     root_attrs: Vec<(String, AttrValue)>,
     groups: Vec<FinishedGroup>,
+    /// Global alignment threshold: datasets with raw data >= this many bytes
+    /// will have their data aligned to `alignment_bytes`.
+    alignment_threshold: usize,
+    /// Global alignment boundary in bytes (0 = disabled).
+    alignment_bytes: usize,
 }
 
 impl Default for FileWriter {
@@ -361,7 +398,19 @@ impl FileWriter {
             root_datasets: Vec::new(),
             root_attrs: Vec::new(),
             groups: Vec::new(),
+            alignment_threshold: 0,
+            alignment_bytes: 0,
         }
+    }
+
+    /// Set global file alignment: datasets with raw data >= `threshold` bytes
+    /// will have their data aligned to `bytes` boundary.
+    ///
+    /// For example, `.alignment(1, 4096)` aligns all datasets to 4KB pages.
+    pub fn alignment(&mut self, threshold: usize, bytes: usize) -> &mut Self {
+        self.alignment_threshold = threshold;
+        self.alignment_bytes = bytes;
+        self
     }
 
     pub fn create_group(&mut self, name: &str) -> GroupBuilder {
@@ -390,6 +439,9 @@ impl FileWriter {
             attrs: Vec<AttributeMessage>,
             chunk_options: ChunkOptions,
             maxshape: Option<Vec<u64>>,
+            fill_time: FillTime,
+            compact: bool,
+            alignment: usize,
         }
         struct GrpFlat {
             name: String,
@@ -422,7 +474,7 @@ impl FileWriter {
                 attrs.extend(p.build_attrs(&raw));
             }
             root_ds_indices.push(all_ds.len());
-            all_ds.push(DsFlat { name: db.name, dt, ds: dspace, raw, attrs, chunk_options: db.chunk_options, maxshape: db.maxshape });
+            all_ds.push(DsFlat { name: db.name, dt, ds: dspace, raw, attrs, chunk_options: db.chunk_options, maxshape: db.maxshape, fill_time: db.fill_time, compact: db.compact, alignment: db.alignment });
         }
 
         for g in self.groups.into_iter() {
@@ -450,7 +502,7 @@ impl FileWriter {
                     attrs.extend(p.build_attrs(&raw));
                 }
                 ds_idx.push(all_ds.len());
-                all_ds.push(DsFlat { name: db.name, dt, ds: dspace, raw, attrs, chunk_options: db.chunk_options, maxshape: db.maxshape });
+                all_ds.push(DsFlat { name: db.name, dt, ds: dspace, raw, attrs, chunk_options: db.chunk_options, maxshape: db.maxshape, fill_time: db.fill_time, compact: db.compact, alignment: db.alignment });
             }
             groups.push(GrpFlat { name: g.name, attrs: gattrs, ds_indices: ds_idx });
         }
@@ -459,6 +511,10 @@ impl FileWriter {
         for (n, v) in &self.root_attrs { root_attrs.push(build_attr_message(n, v)); }
 
         let is_chunked: Vec<bool> = all_ds.iter().map(|d| d.chunk_options.is_chunked() || d.maxshape.is_some()).collect();
+        // Determine which datasets use compact storage
+        let is_compact: Vec<bool> = all_ds.iter().enumerate().map(|(i, d)| {
+            !is_chunked[i] && d.compact && d.raw.len() <= 65536
+        }).collect();
         let root_dense = root_attrs.len() > DENSE_ATTR_THRESHOLD;
         let group_dense: Vec<bool> = groups.iter().map(|g| g.attrs.len() > DENSE_ATTR_THRESHOLD).collect();
         let ds_dense: Vec<bool> = all_ds.iter().map(|d| d.attrs.len() > DENSE_ATTR_THRESHOLD).collect();
@@ -498,11 +554,15 @@ impl FileWriter {
                 let result = build_chunked_data_at_ext(&d.raw, &d.ds.dimensions, &chunk_dims, elem_size, &d.chunk_options, dummy_cursor, d.maxshape.as_deref())?;
                 dummy_cursor += result.data_bytes.len() as u64;
                 let dense_blob = if ds_dense[i] { Some(build_dense_attrs(&d.attrs, 0)) } else { None };
-                let oh = build_chunked_dataset_oh(&d.dt, &d.ds, &result.layout_message, result.pipeline_message.as_deref(), &d.attrs, dense_blob.as_ref());
+                let oh = build_chunked_dataset_oh(&d.dt, &d.ds, &result.layout_message, result.pipeline_message.as_deref(), &d.attrs, dense_blob.as_ref(), d.fill_time);
                 dummy_blobs.push(DataBlob { data: result.data_bytes, oh_bytes: oh });
+            } else if is_compact[i] {
+                let dense_blob = if ds_dense[i] { Some(build_dense_attrs(&d.attrs, 0)) } else { None };
+                let oh = build_compact_dataset_oh(&d.dt, &d.ds, &d.raw, &d.attrs, dense_blob.as_ref(), d.fill_time);
+                dummy_blobs.push(DataBlob { data: vec![], oh_bytes: oh });
             } else {
                 let dense_blob = if ds_dense[i] { Some(build_dense_attrs(&d.attrs, 0)) } else { None };
-                let oh = build_dataset_oh(&d.dt, &d.ds, 0, d.raw.len() as u64, &d.attrs, dense_blob.as_ref());
+                let oh = build_dataset_oh(&d.dt, &d.ds, 0, d.raw.len() as u64, &d.attrs, dense_blob.as_ref(), d.fill_time);
                 dummy_blobs.push(DataBlob { data: d.raw.clone(), oh_bytes: oh });
             }
         }
@@ -550,6 +610,8 @@ impl FileWriter {
         }).collect();
 
         let mut ds_blobs2: Vec<DataBlob> = Vec::new();
+        let global_align_threshold = self.alignment_threshold;
+        let global_align_bytes = self.alignment_bytes;
         for (i, d) in all_ds.iter().enumerate() {
             if is_chunked[i] {
                 let chunk_dims = d.chunk_options.resolve_chunk_dims(&d.ds.dimensions);
@@ -557,13 +619,24 @@ impl FileWriter {
                 let base_address = cursor2 as u64;
                 let result = build_chunked_data_at_ext(&d.raw, &d.ds.dimensions, &chunk_dims, elem_size, &d.chunk_options, base_address, d.maxshape.as_deref())?;
                 cursor2 += result.data_bytes.len();
-                let oh = build_chunked_dataset_oh(&d.dt, &d.ds, &result.layout_message, result.pipeline_message.as_deref(), &d.attrs, ds_dense_blobs[i].as_ref());
+                let oh = build_chunked_dataset_oh(&d.dt, &d.ds, &result.layout_message, result.pipeline_message.as_deref(), &d.attrs, ds_dense_blobs[i].as_ref(), d.fill_time);
                 ds_blobs2.push(DataBlob { data: result.data_bytes, oh_bytes: oh });
+            } else if is_compact[i] {
+                // Compact: data is inline in the object header, no external blob
+                let oh = build_compact_dataset_oh(&d.dt, &d.ds, &d.raw, &d.attrs, ds_dense_blobs[i].as_ref(), d.fill_time);
+                ds_blobs2.push(DataBlob { data: vec![], oh_bytes: oh });
             } else {
-                // Align contiguous data to 8 bytes for zero-copy read support
-                let padding = (8 - (cursor2 % 8)) % 8;
+                // Determine alignment: per-dataset overrides global
+                let align = if d.alignment > 0 {
+                    d.alignment
+                } else if global_align_bytes > 0 && d.raw.len() >= global_align_threshold {
+                    global_align_bytes
+                } else {
+                    8 // default: 8-byte alignment for zero-copy read support
+                };
+                let padding = (align - (cursor2 % align)) % align;
                 cursor2 += padding;
-                let oh = build_dataset_oh(&d.dt, &d.ds, cursor2 as u64, d.raw.len() as u64, &d.attrs, ds_dense_blobs[i].as_ref());
+                let oh = build_dataset_oh(&d.dt, &d.ds, cursor2 as u64, d.raw.len() as u64, &d.attrs, ds_dense_blobs[i].as_ref(), d.fill_time);
                 let mut data = vec![0u8; padding];
                 data.extend_from_slice(&d.raw);
                 cursor2 += d.raw.len();

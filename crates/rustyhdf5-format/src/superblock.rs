@@ -80,7 +80,49 @@ fn ensure_len(data: &[u8], needed: usize) -> Result<(), FormatError> {
     }
 }
 
+/// SWMR (Single Writer / Multiple Reader) consistency flag bits.
+///
+/// These flags are stored in the `consistency_flags` field of the superblock.
+/// For v2/v3 superblocks, only the low byte is stored.
+pub mod swmr_flags {
+    /// Bit 0: File is open for writing.
+    pub const WRITE_ACCESS: u32 = 0x01;
+    /// Bit 2: SWMR write access is active.
+    pub const SWMR_WRITE: u32 = 0x04;
+}
+
 impl Superblock {
+    /// Whether the file was opened with write access when the superblock was written.
+    pub fn is_write_access(&self) -> bool {
+        self.consistency_flags & swmr_flags::WRITE_ACCESS != 0
+    }
+
+    /// Whether SWMR write access is active.
+    ///
+    /// When this flag is set, readers should periodically re-read the
+    /// superblock's EOF address and refresh metadata to see new data
+    /// written by the single writer.
+    pub fn is_swmr_write(&self) -> bool {
+        self.consistency_flags & swmr_flags::SWMR_WRITE != 0
+    }
+
+    /// Re-read the superblock's EOF address from the file data.
+    ///
+    /// In SWMR mode, the writer updates the EOF address as new data is
+    /// appended. Readers should call this periodically to discover new data.
+    /// Returns the updated EOF address, or an error if the superblock
+    /// cannot be re-parsed.
+    pub fn refresh_eof(
+        &mut self,
+        file_data: &[u8],
+        signature_offset: usize,
+    ) -> Result<u64, FormatError> {
+        let refreshed = Superblock::parse(file_data, signature_offset)?;
+        self.eof_address = refreshed.eof_address;
+        self.consistency_flags = refreshed.consistency_flags;
+        Ok(self.eof_address)
+    }
+
     /// Serialize this superblock to bytes.
     ///
     /// Always writes v2/v3 format. Computes and appends Jenkins lookup3 checksum.
@@ -557,5 +599,52 @@ mod tests {
         let sb = Superblock::parse(&data, 0).unwrap();
         assert_eq!(sb.offset_size, 2);
         assert_eq!(sb.eof_address, 2048);
+    }
+
+    #[test]
+    fn swmr_flags_default() {
+        let data = build_v2_bytes(8, 3);
+        let sb = Superblock::parse(&data, 0).unwrap();
+        assert!(!sb.is_write_access());
+        assert!(!sb.is_swmr_write());
+    }
+
+    #[test]
+    fn swmr_write_flag() {
+        let mut data = build_v2_bytes(8, 3);
+        // Set SWMR write flag (bit 2) in consistency_flags byte
+        // In v2/v3, consistency_flags is at offset 11
+        data[11] = 0x04; // SWMR_WRITE
+        // Recompute checksum
+        let cksum_offset = data.len() - 4;
+        let checksum = crate::checksum::jenkins_lookup3(&data[..cksum_offset]);
+        data[cksum_offset..].copy_from_slice(&checksum.to_le_bytes());
+
+        let sb = Superblock::parse(&data, 0).unwrap();
+        assert!(sb.is_swmr_write());
+        assert!(!sb.is_write_access());
+    }
+
+    #[test]
+    fn swmr_write_access_flag() {
+        let mut data = build_v2_bytes(8, 3);
+        data[11] = 0x05; // WRITE_ACCESS | SWMR_WRITE
+        let cksum_offset = data.len() - 4;
+        let checksum = crate::checksum::jenkins_lookup3(&data[..cksum_offset]);
+        data[cksum_offset..].copy_from_slice(&checksum.to_le_bytes());
+
+        let sb = Superblock::parse(&data, 0).unwrap();
+        assert!(sb.is_swmr_write());
+        assert!(sb.is_write_access());
+    }
+
+    #[test]
+    fn refresh_eof() {
+        let data = build_v2_bytes(8, 3);
+        let mut sb = Superblock::parse(&data, 0).unwrap();
+        let old_eof = sb.eof_address;
+        // Re-reading same data should keep same EOF
+        let new_eof = sb.refresh_eof(&data, 0).unwrap();
+        assert_eq!(new_eof, old_eof);
     }
 }
