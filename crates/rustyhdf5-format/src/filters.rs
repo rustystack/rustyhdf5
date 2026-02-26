@@ -67,6 +67,16 @@ pub fn compress_chunk(
 /// Decompress zlib-compressed data.
 #[cfg(feature = "deflate")]
 fn deflate_decompress(data: &[u8]) -> Result<Vec<u8>, FormatError> {
+    // Try system zlib first on macOS (Apple's ARM64-optimized libz is ~1.4x
+    // faster at decompression than zlib-ng on Apple Silicon).
+    #[cfg(all(target_os = "macos", feature = "system-zlib-decompress"))]
+    {
+        if let Ok(result) = sysz::decompress(data) {
+            return Ok(result);
+        }
+        // Fall through to flate2 on error
+    }
+
     use std::io::Read;
     let mut decoder = flate2::read::ZlibDecoder::new(data);
     let mut result = Vec::new();
@@ -74,6 +84,61 @@ fn deflate_decompress(data: &[u8]) -> Result<Vec<u8>, FormatError> {
         .read_to_end(&mut result)
         .map_err(|e| FormatError::DecompressionError(e.to_string()))?;
     Ok(result)
+}
+
+/// Direct FFI to Apple's system libz for fast decompression.
+///
+/// Apple's `/usr/lib/libz.1.dylib` on ARM64 includes hardware-optimized
+/// inflate that is ~1.4x faster than zlib-ng for decompression.
+/// We use `uncompress` for known-size chunks (the common HDF5 case).
+#[cfg(all(target_os = "macos", feature = "system-zlib-decompress"))]
+mod sysz {
+    use std::os::raw::{c_int, c_ulong};
+
+    // Link against system libz (Apple's optimized build)
+    #[link(name = "z")]
+    unsafe extern "C" {
+        fn uncompress(
+            dest: *mut u8,
+            dest_len: *mut c_ulong,
+            source: *const u8,
+            source_len: c_ulong,
+        ) -> c_int;
+    }
+
+    const Z_OK: c_int = 0;
+    const Z_BUF_ERROR: c_int = -5;
+
+    pub(super) fn decompress(data: &[u8]) -> Result<Vec<u8>, String> {
+        // Start with 8x input as estimate, grow if needed
+        let mut out_len = (data.len() * 8) as c_ulong;
+        let mut output = vec![0u8; out_len as usize];
+
+        loop {
+            let mut actual_len = out_len;
+            let ret = unsafe {
+                uncompress(
+                    output.as_mut_ptr(),
+                    &mut actual_len,
+                    data.as_ptr(),
+                    data.len() as c_ulong,
+                )
+            };
+
+            match ret {
+                Z_OK => {
+                    output.truncate(actual_len as usize);
+                    return Ok(output);
+                }
+                Z_BUF_ERROR => {
+                    // Buffer too small, double it
+                    out_len *= 2;
+                    output.resize(out_len as usize, 0);
+                }
+                err => return Err(format!("system zlib uncompress failed: {err}")),
+            }
+        }
+    }
 }
 
 #[cfg(not(feature = "deflate"))]

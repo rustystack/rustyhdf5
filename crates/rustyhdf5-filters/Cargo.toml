@@ -27,4 +27,6 @@ harness = false
 [features]
 default = ["fast-deflate"]
 fast-deflate = ["flate2/zlib-ng"]
+system-zlib = ["flate2/zlib-default"]
+zlib-rs = ["flate2/zlib-rs"]
 apple-compression = []

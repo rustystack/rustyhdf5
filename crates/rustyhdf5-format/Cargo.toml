@@ -28,7 +28,7 @@ name = "bench"
 harness = false
 
 [features]
-default = ["std", "checksum", "deflate", "provenance", "fast-deflate"]
+default = ["std", "checksum", "deflate", "provenance", "fast-deflate", "system-zlib-decompress"]
 std = []
 checksum = []
 deflate = ["flate2"]
@@ -36,3 +36,6 @@ provenance = ["sha2"]
 parallel = ["rayon", "std"]
 fast-checksum = ["crc32fast"]
 fast-deflate = ["flate2/zlib-ng"]
+system-zlib = ["flate2/zlib-default"]
+system-zlib-decompress = []
+zlib-rs = ["flate2/zlib-rs"]
