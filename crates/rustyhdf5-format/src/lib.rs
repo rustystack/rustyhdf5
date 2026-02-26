@@ -51,6 +51,7 @@ extern crate alloc;
 pub mod attribute;
 pub mod attribute_info;
 pub mod chunk_cache;
+pub mod chunk_index;
 pub mod chunked_read;
 pub mod chunked_write;
 pub mod file_writer;

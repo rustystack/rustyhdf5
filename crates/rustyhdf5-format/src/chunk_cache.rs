@@ -20,6 +20,7 @@ use std::collections::HashMap;
 #[cfg(not(feature = "std"))]
 use alloc::collections::BTreeMap;
 
+use crate::chunk_index::{ChunkIndex, ChunkLayout};
 use crate::chunked_read::ChunkInfo;
 
 // ---------------------------------------------------------------------------
@@ -265,6 +266,12 @@ struct CacheInner {
 
     /// Access pattern statistics.
     stats: AccessStats,
+
+    /// Pre-built chunk index for O(1) coordinate lookups.
+    chunk_index: Option<ChunkIndex>,
+
+    /// Pre-computed chunk layout for fast assembly.
+    chunk_layout: Option<ChunkLayout>,
 }
 
 /// Access pattern statistics tracked by the chunk cache.
@@ -299,6 +306,8 @@ impl ChunkCache {
                 tick: 0,
                 last_coord: None,
                 stats: AccessStats::default(),
+                chunk_index: None,
+                chunk_layout: None,
             }),
         }
     }
@@ -341,6 +350,56 @@ impl ChunkCache {
     pub fn all_indexed_chunks(&self) -> Option<Vec<ChunkInfo>> {
         let inner = self.inner.lock().unwrap();
         inner.index.as_ref().map(|m| m.values().cloned().collect())
+    }
+
+    // ----- Chunk index (pre-built coordinate → ChunkInfo map) -----
+
+    /// Returns `true` if the chunk B-tree index has been built.
+    pub fn has_chunk_index(&self) -> bool {
+        self.inner.lock().unwrap().chunk_index.is_some()
+    }
+
+    /// Build and store the chunk B-tree index from a pre-collected list of `ChunkInfo`.
+    pub fn populate_chunk_index(&self, chunks: &[ChunkInfo], rank: usize) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.chunk_index.is_some() {
+            return;
+        }
+        inner.chunk_index = Some(ChunkIndex::build(chunks, rank));
+    }
+
+    // ----- Chunk layout (pre-computed assembly plan) -----
+
+    /// Returns `true` if the chunk layout has been computed.
+    pub fn has_chunk_layout(&self) -> bool {
+        self.inner.lock().unwrap().chunk_layout.is_some()
+    }
+
+    /// Build and store the pre-computed chunk layout for fast assembly.
+    pub fn populate_chunk_layout(
+        &self,
+        ds_dims: &[usize],
+        chunk_dims: &[usize],
+        elem_size: usize,
+    ) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.chunk_layout.is_some() {
+            return;
+        }
+        if let Some(ref idx) = inner.chunk_index {
+            inner.chunk_layout = Some(ChunkLayout::build(idx, ds_dims, chunk_dims, elem_size));
+        }
+    }
+
+    /// Execute a function with a reference to the chunk layout.
+    ///
+    /// Returns `None` if the layout hasn't been computed yet.
+    pub fn with_chunk_layout<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&ChunkLayout) -> R,
+    {
+        let inner = self.inner.lock().unwrap();
+        inner.chunk_layout.as_ref().map(f)
     }
 
     // ----- Decompressed data cache (LRU) -----
@@ -453,6 +512,8 @@ impl ChunkCache {
         inner.tick = 0;
         inner.last_coord = None;
         inner.stats = AccessStats::default();
+        inner.chunk_index = None;
+        inner.chunk_layout = None;
     }
 
     /// Hint that the given chunk coordinates will be accessed soon.
