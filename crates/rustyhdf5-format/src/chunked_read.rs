@@ -428,7 +428,45 @@ pub fn read_chunked_data(
     let chunk_total_elements: usize = chunk_dims.iter().product();
     let chunk_total_bytes = chunk_total_elements * elem_size;
 
-    // Decompress all chunks (parallel when beneficial, sequential otherwise)
+    // Fast path: no filters — copy directly from file_data without intermediate alloc
+    if pipeline.is_none() {
+        for chunk_info in &chunks {
+            let chunk_offsets: Vec<usize> = chunk_info.offsets.iter()
+                .take(rank)
+                .map(|&o| o as usize)
+                .collect();
+
+            let c_addr = chunk_info.address as usize;
+            let size = chunk_info.chunk_size as usize;
+            if c_addr + size > file_data.len() {
+                return Err(FormatError::UnexpectedEof {
+                    expected: c_addr + size,
+                    available: file_data.len(),
+                });
+            }
+            let chunk_data = &file_data[c_addr..c_addr + size];
+
+            if rank == 0 {
+                let copy_len = chunk_data.len().min(output.len());
+                output[..copy_len].copy_from_slice(&chunk_data[..copy_len]);
+            } else {
+                copy_chunk_to_output(
+                    chunk_data,
+                    &mut output,
+                    &chunk_offsets,
+                    &chunk_dims,
+                    &ds_dims,
+                    &ds_strides,
+                    &chunk_strides,
+                    elem_size,
+                    rank,
+                );
+            }
+        }
+        return Ok(output);
+    }
+
+    // Filtered path: decompress all chunks then assemble
     let decompressed_chunks = decompress_all_chunks(
         file_data,
         &chunks,
@@ -438,7 +476,6 @@ pub fn read_chunked_data(
     )?;
 
     for (chunk_info, decompressed) in chunks.iter().zip(decompressed_chunks.iter()) {
-        // B-tree v1 (v3) offsets have rank+1 dims; v4 index offsets have rank dims
         let chunk_offsets: Vec<usize> = chunk_info.offsets.iter()
             .take(rank)
             .map(|&o| o as usize)
@@ -1144,17 +1181,58 @@ fn copy_chunk_to_output(
     elem_size: usize,
     rank: usize,
 ) {
-    // Iterate over all elements in the chunk using a flat index
-    let chunk_total: usize = chunk_dims.iter().product();
-    for flat_idx in 0..chunk_total {
-        // Convert flat index to N-D chunk-local coordinates
-        let mut remaining = flat_idx;
+    // Row-copy approach: iterate over outer dimensions, memcpy the innermost
+    // dimension in bulk. For 1-D data this is a single memcpy per chunk.
+    // For N-D data this is one memcpy per "row" (innermost dim slice).
+
+    if rank == 1 {
+        // Fast path for 1-D: single contiguous copy per chunk
+        let global_start = chunk_offsets[0];
+        let copy_len = chunk_dims[0].min(ds_dims[0].saturating_sub(global_start));
+        let src_bytes = copy_len * elem_size;
+        let dst_start = global_start * elem_size;
+        if src_bytes > 0 && dst_start + src_bytes <= output.len() && src_bytes <= chunk_data.len() {
+            output[dst_start..dst_start + src_bytes]
+                .copy_from_slice(&chunk_data[..src_bytes]);
+        }
+        return;
+    }
+
+    // General N-D: iterate over outer dimensions, copy innermost rows
+    let inner_dim = rank - 1;
+    let inner_chunk_len = chunk_dims[inner_dim]
+        .min(ds_dims[inner_dim].saturating_sub(chunk_offsets[inner_dim]));
+    let row_bytes = inner_chunk_len * elem_size;
+
+    if row_bytes == 0 {
+        return;
+    }
+
+    // Number of rows = product of all outer chunk dimensions
+    let outer_count: usize = chunk_dims[..inner_dim].iter().product();
+
+    // Outer strides for iterating chunk-local coordinates
+    let mut outer_strides = vec![1usize; inner_dim];
+    for i in (0..inner_dim.saturating_sub(1)).rev() {
+        outer_strides[i] = outer_strides[i + 1] * chunk_dims[i + 1];
+    }
+
+    for outer_idx in 0..outer_count {
+        // Convert outer flat index to N-D chunk-local coords for dims 0..inner_dim
+        let mut remaining = outer_idx;
         let mut ds_flat = 0usize;
+        let mut src_flat = 0usize;
         let mut out_of_bounds = false;
 
-        for d in 0..rank {
-            let coord_in_chunk = remaining / chunk_strides[d];
-            remaining %= chunk_strides[d];
+        for d in 0..inner_dim {
+            let coord_in_chunk = if inner_dim > 1 {
+                remaining / outer_strides[d]
+            } else {
+                remaining
+            };
+            if inner_dim > 1 {
+                remaining %= outer_strides[d];
+            }
 
             let global_coord = chunk_offsets[d] + coord_in_chunk;
             if global_coord >= ds_dims[d] {
@@ -1162,18 +1240,22 @@ fn copy_chunk_to_output(
                 break;
             }
             ds_flat += global_coord * ds_strides[d];
+            src_flat += coord_in_chunk * chunk_strides[d];
         }
 
         if out_of_bounds {
             continue;
         }
 
-        let src_start = flat_idx * elem_size;
+        // Add innermost dimension offset
+        ds_flat += chunk_offsets[inner_dim] * ds_strides[inner_dim];
+
+        let src_start = src_flat * elem_size;
         let dst_start = ds_flat * elem_size;
 
-        if src_start + elem_size <= chunk_data.len() && dst_start + elem_size <= output.len() {
-            output[dst_start..dst_start + elem_size]
-                .copy_from_slice(&chunk_data[src_start..src_start + elem_size]);
+        if src_start + row_bytes <= chunk_data.len() && dst_start + row_bytes <= output.len() {
+            output[dst_start..dst_start + row_bytes]
+                .copy_from_slice(&chunk_data[src_start..src_start + row_bytes]);
         }
     }
 }
