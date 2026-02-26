@@ -370,6 +370,22 @@ pub fn read_as_i64(raw: &[u8], datatype: &Datatype) -> Result<Vec<i64>, FormatEr
         });
     }
     let count = raw.len() / elem_size;
+
+    // Fast path: native LE i64 — single bulk memcpy
+    #[cfg(target_endian = "little")]
+    if elem_size == 8 && matches!(datatype, Datatype::FixedPoint { byte_order: DatatypeByteOrder::LittleEndian, signed: true, .. })
+    {
+        let mut result = vec![0i64; count];
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                raw.as_ptr(),
+                result.as_mut_ptr() as *mut u8,
+                raw.len(),
+            );
+        }
+        return Ok(result);
+    }
+
     let order = get_byte_order(datatype);
     let mut result = Vec::with_capacity(count);
     for i in 0..count {
@@ -412,6 +428,22 @@ pub fn read_as_f32(raw: &[u8], datatype: &Datatype) -> Result<Vec<f32>, FormatEr
         });
     }
     let count = raw.len() / elem_size;
+
+    // Fast path: native-endian f32 — single bulk memcpy
+    #[cfg(target_endian = "little")]
+    if matches!(datatype, Datatype::FloatingPoint { size: 4, byte_order: DatatypeByteOrder::LittleEndian, .. })
+    {
+        let mut result = vec![0.0f32; count];
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                raw.as_ptr(),
+                result.as_mut_ptr() as *mut u8,
+                raw.len(),
+            );
+        }
+        return Ok(result);
+    }
+
     let order = get_byte_order(datatype);
     let mut result = Vec::with_capacity(count);
     for i in 0..count {
@@ -451,6 +483,22 @@ pub fn read_as_i32(raw: &[u8], datatype: &Datatype) -> Result<Vec<i32>, FormatEr
         });
     }
     let count = raw.len() / elem_size;
+
+    // Fast path: native LE i32 — single bulk memcpy
+    #[cfg(target_endian = "little")]
+    if elem_size == 4 && matches!(datatype, Datatype::FixedPoint { byte_order: DatatypeByteOrder::LittleEndian, .. })
+    {
+        let mut result = vec![0i32; count];
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                raw.as_ptr(),
+                result.as_mut_ptr() as *mut u8,
+                raw.len(),
+            );
+        }
+        return Ok(result);
+    }
+
     let order = get_byte_order(datatype);
     let mut result = Vec::with_capacity(count);
     for i in 0..count {
