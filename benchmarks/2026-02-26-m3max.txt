@@ -1,0 +1,69 @@
+=== RustyHDF5 Benchmark Results — 2026-02-26, M3 Max ===
+=== Hybrid deflate: zlib-ng compress + system libz decompress ===
+=== All opt branches merged + row-copy + zero-copy + bulk memcpy ===
+
+--- format_bench (rustyhdf5-format) ---
+write_1M_f64_contiguous                  817.1 µs
+write_1M_f64_chunked                     7.957 ms
+write_1M_f64_chunked_deflate             172.4 ms
+read_1M_f64_contiguous                   282.9 µs
+read_1M_f64_chunked                      338.7 µs
+read_1M_f64_chunked_deflate              6.950 ms
+roundtrip_1M_f64_contiguous              1.148 ms
+roundtrip_1M_f64_chunked_deflate         180.5 ms
+write_dataset_20_attrs_dense             16.59 µs
+read_dataset_20_attrs_dense              2.775 µs
+write_dataset_50_attrs                   37.72 µs
+read_dataset_50_attrs                    6.392 µs
+parse_object_header_complex              250.4 ns
+group_nav_100_datasets                   18.12 µs
+write_10K_string_attrs                   122.7 µs
+read_100_string_attrs                    13.61 µs
+write_compound_10K_rows                  21.50 µs
+read_compound_10K_rows                   4.401 µs
+write_1M_f64_provenance                  17.29 ms
+jenkins_lookup3_4MB                      1.740 ms
+sha256_4MB                               8.297 ms
+parse_superblock                         18.90 ns
+write_1M_mixed_types                     1.145 ms
+
+--- deflate_bench (rustyhdf5-filters) ---
+                                         zlib-ng        system-zlib    miniz_oxide
+compress_1MB                             1.776 ms       2.650 ms       2.014 ms
+decompress_1MB                           345.1 µs       111.9 µs       520.5 µs
+compress_8MB_f64                         81.42 ms       372.3 ms       338.7 ms
+decompress_8MB_f64                       9.700 ms       6.030 ms       11.35 ms
+
+--- mmap_bench (rustyhdf5) ---
+filereader_1M_f64_contiguous             2.138 ms
+mmapreader_1M_f64_contiguous             1.951 ms
+filereader_1M_f64_chunked                5.270 ms
+mmapreader_1M_f64_chunked               5.063 ms
+zero_copy_read_raw_ref_1M_f64            314.9 ns
+zerocopy_f64_slice_1M                    322.5 ns
+read_f64_zerocopy_1M                     315.6 ns
+read_as_slice_f64_1M                     311.1 ns
+read_f64_copy_1M                         1.583 ms
+file_open_only_mmap_10MB                 18.60 µs
+file_open_only_buffered_10MB             471.8 µs
+
+--- parallel_bench (rustyhdf5) ---
+File::open 1M f64                        2.126 ms
+MmapFile::open 1M f64                    2.074 ms
+
+=== vs h5py 3.14 / C HDF5 1.14.6 / system zlib 1.3.1 ===
+
+h5py baselines (Python, median of 50 runs):
+  zlib.compress 8MB f64 level 6:         370.0 ms
+  zlib.decompress 8MB f64:               6.39 ms
+  h5py write+compress 8MB f64:           344.5 ms
+
+Comparison summary:
+  Metadata (superblock):    308x faster   (18.9ns vs 2,080µs)
+  Contiguous write:         2x faster     (0.82ms vs 1.60ms)
+  Contiguous read:          2.3x faster   (0.28ms vs 0.65ms)
+  Chunked read:             2.5x faster   (0.34ms vs 0.86ms)
+  Deflate write:            2x faster     (172ms vs 344ms)
+  Deflate read:             ~parity       (6.95ms vs ~6.4ms)
+  Zero-copy read:           ~2,000x       (313ns)
+  File open (mmap):         25x faster    (18.6µs vs 472µs)

@@ -26,22 +26,25 @@ A pure-Rust HDF5 reader and writer with zero C dependencies. Read and write HDF5
 
 ## Performance Benchmarks
 
-Benchmarked on Apple MacBook M3 Max. Comparisons against the C HDF5 library (via hdf5-rust bindings).
+Benchmarked on Apple MacBook M3 Max (2026-02-26). Compared against h5py 3.14 / C HDF5 1.14.6 with system zlib 1.3.1.
 
-| Operation | rustyhdf5 | C HDF5 | Result |
+| Operation | rustyhdf5 | h5py (C HDF5) | Result |
 |---|---|---|---|
-| Metadata ops (open + navigate + read attrs) | 0.2–1.5 µs | 18–45 µs | **12–90× faster** |
-| Contiguous writes (1M f64) | 4.8 ms | 8.6 ms | **1.8× faster** |
-| Contiguous reads (1M f64, mmap) | ~0 µs (zero-copy) | 1.54 ms | **zero-copy (P0)** |
-| Chunked reads (1M f64, cached) | < 1 ms (hash index + LRU) | 4.3 ms | **cached (P1)** |
-| Compressed reads (deflate, 1M f64) | < 200 ms (zlib-ng) | 625 ms | **3×+ faster (P2)** |
-| File open | 377 µs (mmap) | 20.9 ms | **55× faster** |
-| Vector search (IVF-PQ, 100K) | 380 µs | N/A (not in C HDF5) | **6.2× faster than numpy** |
+| Metadata (parse superblock) | 19 ns | 2,080 µs | **308× faster** |
+| Contiguous write (1M f64) | 0.82 ms | 1.60 ms | **2× faster** |
+| Contiguous read (1M f64) | 0.28 ms | 0.65 ms | **2.3× faster** |
+| Chunked read (1M f64, 100 chunks) | 0.34 ms | 0.86 ms | **2.5× faster** |
+| Compressed write (deflate, 1M f64) | 172 ms | 344 ms | **2× faster** |
+| Compressed read (deflate, 1M f64) | 6.95 ms | ~6.4 ms | **~parity** |
+| Zero-copy read (1M f64, mmap) | 313 ns | N/A | **~2,000× faster** |
+| File open (mmap vs buffered) | 19 µs | 472 µs | **25× faster** |
 
 **Key optimizations:**
-- **P0 — Zero-copy contiguous reads** via memory-mapped I/O. Data is accessed directly from the OS page cache with no allocation or copy.
-- **P1 — Chunk cache with hash-based index** and LRU eviction. Repeated access to the same chunks avoids redundant decompression.
-- **P2 — Fast deflate** with optional zlib-ng backend or Apple Compression Framework for native hardware acceleration.
+- **Zero-copy reads** via mmap — data accessed directly from the OS page cache, no allocation or copy.
+- **Row-copy chunk assembly** — bulk memcpy per row instead of per-element coordinate math.
+- **Bulk native transmute** — `ptr::copy_nonoverlapping` for LE f64 instead of per-element conversion.
+- **Hybrid deflate** — zlib-ng for compression (4.5× faster than system zlib), Apple system libz for decompression (hardware-optimized ARM64 inflate).
+- **Chunk index cache** — O(1) hash-based chunk lookup with pre-computed layout plans and LRU data cache.
 
 ## Architecture
 
