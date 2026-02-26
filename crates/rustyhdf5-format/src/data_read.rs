@@ -298,18 +298,19 @@ pub fn read_as_f64(raw: &[u8], datatype: &Datatype) -> Result<Vec<f64>, FormatEr
     }
     let count = raw.len() / elem_size;
 
-    // Fast path: native-endian f64 can use bulk copy (zero conversion overhead)
+    // Fast path: native-endian f64 — single bulk memcpy
     #[cfg(target_endian = "little")]
     if matches!(datatype, Datatype::FloatingPoint { size: 8, byte_order: DatatypeByteOrder::LittleEndian, .. })
     {
         let mut result = vec![0.0f64; count];
-        // Safety equivalent via from_le_bytes — but we use safe transmute-free copy
-        for (i, val) in result.iter_mut().enumerate() {
-            let off = i * 8;
-            *val = f64::from_le_bytes([
-                raw[off], raw[off+1], raw[off+2], raw[off+3],
-                raw[off+4], raw[off+5], raw[off+6], raw[off+7],
-            ]);
+        // SAFETY: On LE platforms, f64 in-memory representation matches LE bytes.
+        // We copy raw bytes directly into the f64 buffer.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                raw.as_ptr(),
+                result.as_mut_ptr() as *mut u8,
+                raw.len(),
+            );
         }
         return Ok(result);
     }
